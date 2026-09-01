@@ -1,0 +1,193 @@
+package handler
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+
+	"github.com/rames/endless-notebook/internal/auth"
+	"github.com/rames/endless-notebook/internal/entry"
+)
+
+// Server agrupa handlers HTTP
+type Server struct {
+	db        *sql.DB
+	auth      *auth.Manager
+	entryRepo *entry.Repository
+}
+
+// New cria um novo servidor HTTP
+func New(db *sql.DB, authMgr *auth.Manager) *Server {
+	return &Server{
+		db:        db,
+		auth:      authMgr,
+		entryRepo: entry.NewRepository(db),
+	}
+}
+
+// EntryResponse é o formato JSON de uma entry
+type EntryResponse struct {
+	ID        int64    `json:"id"`
+	CreatedAt string   `json:"created_at"`
+	RawText   string   `json:"raw_text"`
+	Amount    *float64 `json:"amount"`
+	Tags      []string `json:"tags"`
+}
+
+// toResponse converte uma entry interna para response JSON
+func toResponse(e *entry.Entry) *EntryResponse {
+	return &EntryResponse{
+		ID:        e.ID,
+		CreatedAt: e.CreatedAtFormatted(),
+		RawText:   e.RawText,
+		Amount:    e.Amount,
+		Tags:      e.Tags,
+	}
+}
+
+// CreateEntryRequest é o formato JSON de entrada para criar entry
+type CreateEntryRequest struct {
+	Text string `json:"text"`
+}
+
+// Me retorna dados do usuário logado
+func (s *Server) Me(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserID(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":       userID,
+		"username": s.auth.Username(userID),
+	})
+}
+
+// CreateEntry handler POST /api/entries
+func (s *Server) CreateEntry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+
+	var req CreateEntryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// parse da entry
+	e, err := entry.ParseEntry(req.Text)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("parse error: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// salva no banco
+	id, err := s.entryRepo.Save(userID, e)
+	if err != nil {
+		log.Printf("error saving entry: %v", err)
+		http.Error(w, "failed to save entry", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":    id,
+		"entry": toResponse(e),
+	})
+}
+
+// GetEntry handler GET /api/entry?id=
+func (s *Server) GetEntry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	e, err := s.entryRepo.GetByID(userID, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(toResponse(e))
+}
+
+// ListEntries handler GET /api/entries
+func (s *Server) ListEntries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+
+	// se tiver query param "tag", filtra por tag
+	tag := r.URL.Query().Get("tag")
+	var entries []*entry.Entry
+	var err error
+
+	if tag != "" {
+		entries, err = s.entryRepo.ListByTag(userID, tag)
+	} else {
+		entries, err = s.entryRepo.ListAll(userID)
+	}
+
+	if err != nil {
+		log.Printf("error listing entries: %v", err)
+		http.Error(w, "failed to list entries", http.StatusInternalServerError)
+		return
+	}
+
+	responses := make([]*EntryResponse, len(entries))
+	for i, e := range entries {
+		responses[i] = toResponse(e)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses)
+}
+
+// DeleteEntry handler DELETE /api/entry?id=
+func (s *Server) DeleteEntry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.entryRepo.Delete(userID, id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HealthHandler retorna status de saúde
+func (s *Server) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}

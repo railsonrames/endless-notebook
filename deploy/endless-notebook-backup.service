@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup do banco do Endless Notebook
+
+[Service]
+Type=oneshot
+User=endless
+Group=endless
+ExecStart=/opt/endless-notebook/backup.sh

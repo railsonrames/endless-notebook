@@ -1,0 +1,30 @@
+# /etc/caddy/Caddyfile
+#
+# Troque APP_DOMAIN e ACME_EMAIL pelos valores reais antes de aplicar.
+# Recarregar depois de editar:  sudo systemctl reload caddy
+
+{
+	email ACME_EMAIL
+}
+
+APP_DOMAIN {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+
+	header {
+		# HSTS: força HTTPS por 1 ano (só ative quando o domínio estiver 100% em HTTPS)
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/endless-notebook.log {
+			roll_size 10M
+
+			roll_keep 5
+		}
+	}
+}

@@ -1,0 +1,86 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build static binary (linux/amd64)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags='-s -w' -o dist/endless-notebook ./cmd/server
+          test -x dist/endless-notebook && file dist/endless-notebook
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: endless-notebook
+          path: dist/endless-notebook
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # só publica quando a VPS estiver pronta: crie a repo variable DEPLOY_ENABLED=true
+    # (Settings -> Secrets and variables -> Actions -> Variables). Serve de kill-switch.
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: endless-notebook
+          path: dist
+
+      - name: Configure SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${{ secrets.SSH_PORT || '22' }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload binary
+        run: |
+          chmod +x dist/endless-notebook
+          scp -i ~/.ssh/id_deploy -P "${{ secrets.SSH_PORT || '22' }}" \
+            dist/endless-notebook \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/endless-notebook.new"
+
+      - name: Release (install + restart)
+        run: |
+          ssh -i ~/.ssh/id_deploy -p "${{ secrets.SSH_PORT || '22' }}" \
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
+            "set -e && \
+             sudo /usr/bin/install -o endless -g endless -m 0755 /tmp/endless-notebook.new /opt/endless-notebook/endless-notebook && \
+             rm -f /tmp/endless-notebook.new && \
+             sudo /usr/bin/systemctl restart endless-notebook && \
+             sleep 2 && \
+             sudo /usr/bin/systemctl is-active endless-notebook"
+
+      - name: Health check
+        run: |
+          curl -fsS --retry 10 --retry-all-errors --retry-connrefused --retry-delay 6 \
+            "https://${{ secrets.APP_DOMAIN }}/health"

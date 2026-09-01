@@ -1,0 +1,18 @@
+# binários
+/bin/
+/dist/
+/server
+endless-notebook
+
+# banco de dados local
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# artefatos de teste
+cookies.txt
+/tmp/
+
+# sistema
+.DS_Store

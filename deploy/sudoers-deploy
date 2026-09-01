@@ -1,0 +1,12 @@
+# Instale como: /etc/sudoers.d/endless-notebook-deploy   (modo 0440, dono root)
+#   sudo install -m 0440 deploy/sudoers-deploy /etc/sudoers.d/endless-notebook-deploy
+#   sudo visudo -cf /etc/sudoers.d/endless-notebook-deploy   # valida a sintaxe
+#
+# Permite que o usuário "deploy" (usado pelo GitHub Actions) faça SOMENTE o
+# necessário para publicar uma nova versão, sem senha e sem shell root.
+
+deploy ALL=(root) NOPASSWD: \
+    /usr/bin/install -o endless -g endless -m 0755 /tmp/endless-notebook.new /opt/endless-notebook/endless-notebook, \
+    /usr/bin/systemctl restart endless-notebook, \
+    /usr/bin/systemctl is-active endless-notebook, \
+    /usr/bin/systemctl status endless-notebook

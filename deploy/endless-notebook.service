@@ -1,0 +1,32 @@
+[Unit]
+Description=Endless Notebook
+Documentation=https://github.com/rames/endless-notebook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=endless
+Group=endless
+WorkingDirectory=/opt/endless-notebook
+ExecStart=/opt/endless-notebook/endless-notebook -port 127.0.0.1:8080 -db /opt/endless-notebook/data/notebook.db -secure-cookie
+EnvironmentFile=/opt/endless-notebook/endless-notebook.env
+Restart=on-failure
+RestartSec=2
+
+# --- hardening ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# única pasta com escrita permitida (o arquivo .db fica aqui)
+ReadWritePaths=/opt/endless-notebook/data
+
+[Install]
+WantedBy=multi-user.target
