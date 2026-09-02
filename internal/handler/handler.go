@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/rames/endless-notebook/internal/auth"
 	"github.com/rames/endless-notebook/internal/entry"
@@ -28,10 +29,13 @@ func New(db *sql.DB, authMgr *auth.Manager) *Server {
 	}
 }
 
-// EntryResponse é o formato JSON de uma entry
+// EntryResponse é o formato JSON de uma entry.
+// Timestamps são RFC3339 UTC; o cliente converte para o fuso local na exibição.
 type EntryResponse struct {
 	ID        int64    `json:"id"`
 	CreatedAt string   `json:"created_at"`
+	StartedAt *string  `json:"started_at"`
+	EndedAt   *string  `json:"ended_at"`
 	RawText   string   `json:"raw_text"`
 	Amount    *float64 `json:"amount"`
 	Tags      []string `json:"tags"`
@@ -41,7 +45,9 @@ type EntryResponse struct {
 func toResponse(e *entry.Entry) *EntryResponse {
 	return &EntryResponse{
 		ID:        e.ID,
-		CreatedAt: e.CreatedAtFormatted(),
+		CreatedAt: e.CreatedAt,
+		StartedAt: e.StartedAt,
+		EndedAt:   e.EndedAt,
 		RawText:   e.RawText,
 		Amount:    e.Amount,
 		Tags:      e.Tags,
@@ -51,6 +57,13 @@ func toResponse(e *entry.Entry) *EntryResponse {
 // CreateEntryRequest é o formato JSON de entrada para criar entry
 type CreateEntryRequest struct {
 	Text string `json:"text"`
+}
+
+// UpdateEntryRequest é o corpo de PUT/PATCH /api/entry.
+// Campos omitidos (nil) não são alterados. ended_at vazio ("") limpa o fim.
+type UpdateEntryRequest struct {
+	Text    *string `json:"text"`
+	EndedAt *string `json:"ended_at"`
 }
 
 // Me retorna dados do usuário logado
@@ -159,6 +172,51 @@ func (s *Server) ListEntries(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(responses)
+}
+
+// UpdateEntry handler PUT/PATCH /api/entry?id=
+func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var req UpdateEntryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if req.Text == nil && req.EndedAt == nil {
+		http.Error(w, "nothing to update", http.StatusBadRequest)
+		return
+	}
+	if req.Text != nil && strings.TrimSpace(*req.Text) == "" {
+		http.Error(w, "text cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	e, err := s.entryRepo.Update(userID, id, req.Text, req.EndedAt)
+	if err != nil {
+		if err.Error() == "entry not found" {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		log.Printf("error updating entry: %v", err)
+		http.Error(w, "failed to update entry", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(toResponse(e))
 }
 
 // DeleteEntry handler DELETE /api/entry?id=

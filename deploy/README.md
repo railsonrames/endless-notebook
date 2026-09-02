@@ -113,11 +113,11 @@ cd endless-notebook
 > e no passo abaixo use `bash ~/endless-notebook/deploy/provision.sh`.
 
 ```bash
-sudo APP_DOMAIN=notebook.seu-dominio.com \
-     ACME_EMAIL=voce@seu-dominio.com \
-     INVITE_CODE='troque-por-um-codigo-forte' \
-     DEPLOY_PUBKEY="$(cat ~/.ssh/endless-deploy.pub)" \
-     bash deploy/provision.sh
+export APP_DOMAIN=notebook.seu-dominio.com
+export ACME_EMAIL=voce@seu-dominio.com
+export INVITE_CODE='troque-por-um-codigo-forte'
+export DEPLOY_PUBKEY="$(cat ~/endless-deploy.pub)"
+sudo --preserve-env=APP_DOMAIN,ACME_EMAIL,INVITE_CODE,DEPLOY_PUBKEY bash ~/endless-notebook/deploy/provision.sh
 ```
 
 O script é idempotente. Ao final ele:

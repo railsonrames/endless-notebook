@@ -83,10 +83,15 @@ func main() {
 	})))
 
 	http.Handle("/api/entry", authMgr.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			srv.GetEntry(w, r)
-		} else if r.Method == http.MethodDelete {
+		case http.MethodDelete:
 			srv.DeleteEntry(w, r)
+		case http.MethodPut, http.MethodPatch:
+			srv.UpdateEntry(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})))
 

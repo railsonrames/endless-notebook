@@ -194,6 +194,7 @@ function createRow(sheet, index) {
             time.textContent = '--:--';
         }
     };
+    row._renderTimeLabel = renderTimeLabel;
 
     const beginActivity = () => {
         row.classList.add('active');
@@ -219,10 +220,19 @@ function createRow(sheet, index) {
         renderTimeLabel();
         activityEnd = now;
         setStatus(`Status: activity ended at ${row.dataset.endLabel}`);
+        // Persiste o fim quando a linha já existe no servidor.
+        if (row.dataset.entryId) {
+            updateEntry(row.dataset.entryId, { ended_at: row.dataset.end }).then((ok) => {
+                if (!ok) setStatus('Status: falha ao guardar o fim da atividade');
+            });
+        }
     };
+    row._endActivity = endActivity;
 
     row.addEventListener('focusin', () => {
-        beginActivity();
+        if (!row.dataset.saved) {
+            beginActivity();
+        }
         ensureTrailingRows(sheet);
     });
 
@@ -234,6 +244,7 @@ function createRow(sheet, index) {
     // (mesma ideia de clicar num card da lista de entradas).
     time.addEventListener('click', (event) => {
         event.stopPropagation();
+        if (row.dataset.editing) return;
         if (row.dataset.start) {
             endActivity(true);
         } else {
@@ -242,41 +253,142 @@ function createRow(sheet, index) {
         }
     });
 
+    // Clicar no texto de uma linha já salva abre a edição inline.
+    content.addEventListener('click', () => {
+        if (row.dataset.saved && !row.dataset.editing) {
+            enterEditMode(row);
+        }
+    });
+
     content.addEventListener('input', () => ensureTrailingRows(sheet));
 
+    // Sair da linha em edição confirma a alteração.
+    content.addEventListener('blur', () => {
+        if (row.dataset.editing) {
+            commitEdit(row);
+        }
+    });
+
     content.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            if (!row.dataset.start) {
-                beginActivity();
+        // Linha já salva e em edição inline.
+        if (row.dataset.editing) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                commitEdit(row);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                cancelEdit(row);
             }
+            return;
+        }
 
-            const value = content.textContent.trim();
-            if (value && !row.dataset.saved) {
-                saveSheetRow(value);
-                // Mantém o texto escrito na linha do caderno e trava a linha.
-                content.textContent = value;
-                content.contentEditable = 'false';
-                row.dataset.saved = '1';
-                row.classList.add('committed');
-                content.blur();
+        if (event.key !== 'Enter' || event.shiftKey) return;
+        event.preventDefault();
 
-                const nextIndex = Number(row.dataset.index) + 1;
-                const next = sheetRows[nextIndex] || appendRow(sheet);
-                next.querySelector('.row-content').focus({ preventScroll: true });
-                revealRowIfNeeded(sheet, next);
-                ensureTrailingRows(sheet);
-            } else if (row.dataset.saved) {
-                // Linha já salva: Enter só pula para a próxima.
-                const nextIndex = Number(row.dataset.index) + 1;
-                const next = sheetRows[nextIndex] || appendRow(sheet);
-                next.querySelector('.row-content').focus({ preventScroll: true });
-                revealRowIfNeeded(sheet, next);
-            }
+        if (!row.dataset.start) {
+            beginActivity();
+        }
+
+        const value = content.textContent.trim();
+
+        if (value && !row.dataset.saved) {
+            // Trava a linha e salva no servidor.
+            row.dataset.saved = '1';
+            row.dataset.rawText = value;
+            row.classList.add('committed');
+            content.textContent = value;
+            content.contentEditable = 'false';
+            content.blur();
+            saveSheetRow(row, value);
+            focusNextRow(sheet, row);
+            ensureTrailingRows(sheet);
+        } else if (row.dataset.saved) {
+            // Linha já salva: Enter só pula para a próxima.
+            focusNextRow(sheet, row);
         }
     });
 
     return row;
+}
+
+// Move o foco para a próxima linha, criando-a se necessário.
+function focusNextRow(sheet, row) {
+    const nextIndex = Number(row.dataset.index) + 1;
+    const next = sheetRows[nextIndex] || appendRow(sheet);
+    next.querySelector('.row-content').focus({ preventScroll: true });
+    revealRowIfNeeded(sheet, next);
+}
+
+// ============================================
+// EDIÇÃO INLINE DE LINHAS JÁ SALVAS
+// ============================================
+
+function enterEditMode(row) {
+    const content = row.querySelector('.row-content');
+    row.dataset.editing = '1';
+    row.classList.add('editing');
+    content.contentEditable = 'true';
+    content.textContent = row.dataset.rawText || content.textContent;
+    content.focus();
+    placeCaretEnd(content);
+    setStatus('Status: editing entry (Enter salva, Esc cancela)');
+}
+
+async function commitEdit(row) {
+    const content = row.querySelector('.row-content');
+    const value = content.textContent.trim();
+    const id = row.dataset.entryId;
+    const original = row.dataset.rawText || '';
+
+    delete row.dataset.editing;
+    row.classList.remove('editing');
+    content.contentEditable = 'false';
+
+    if (!value) {
+        content.textContent = original;
+        setStatus('Status: edição vazia ignorada');
+        return;
+    }
+    if (value === original) {
+        content.textContent = original;
+        return;
+    }
+    if (!id) {
+        // Linha ainda sem id no servidor: guarda só em memória.
+        row.dataset.rawText = value;
+        content.textContent = value;
+        return;
+    }
+
+    const updated = await updateEntry(id, { text: value });
+    if (updated) {
+        row.dataset.rawText = value;
+        content.textContent = value;
+        setStatus('Status: entry atualizada');
+        loadEntries(currentFilterTag);
+    } else {
+        content.textContent = original;
+        setStatus('Status: falha ao atualizar a entry');
+    }
+}
+
+function cancelEdit(row) {
+    const content = row.querySelector('.row-content');
+    delete row.dataset.editing;
+    row.classList.remove('editing');
+    content.contentEditable = 'false';
+    content.textContent = row.dataset.rawText || '';
+    content.blur();
+    setStatus('Status: edição cancelada');
+}
+
+function placeCaretEnd(el) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
 }
 
 // Acrescenta uma linha ao final do caderno.
@@ -322,13 +434,37 @@ function setStatus(value) {
     }
 }
 
-function saveSheetRow(text) {
+async function saveSheetRow(row, text) {
     if (!text) return;
-    addEntry(text);
+    const id = await addEntry(text);
+    if (id) {
+        row.dataset.entryId = String(id);
+        // Se o fim foi marcado antes do id voltar do servidor, persiste agora.
+        if (row.dataset.end) {
+            updateEntry(id, { ended_at: row.dataset.end });
+        }
+    }
 }
 
+// Formata só a hora (HH:MM) no fuso do browser.
 function formatTimeOnly(date) {
-    return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    if (!(date instanceof Date) || isNaN(date)) return '--:--';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Converte um timestamp do servidor (RFC3339 UTC) num Date local.
+// Aceita também o formato legado "YYYYMMDDHHMM" (hora local).
+function parseServerDate(value) {
+    if (!value) return null;
+    const s = String(value);
+    if (/^\d{12}$/.test(s)) {
+        return new Date(
+            +s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8),
+            +s.slice(8, 10), +s.slice(10, 12)
+        );
+    }
+    const dt = new Date(s);
+    return isNaN(dt) ? null : dt;
 }
 
 // ============================================
@@ -381,17 +517,26 @@ function hydrateNotebookSheet(entries) {
     ordered.forEach((entry, i) => {
         const row = sheetRows[i] || appendRow(sheet);
         const content = row.querySelector('.row-content');
-        const time = row.querySelector('.row-time');
-        const label = timeLabelFromCreatedAt(entry.created_at);
+
+        const startVal = entry.started_at || entry.created_at;
+        const startLabel = timeLabelFromCreatedAt(startVal);
 
         content.textContent = entry.raw_text;
         content.contentEditable = 'false';
         row.dataset.saved = '1';
         row.dataset.entryId = String(entry.id);
-        row.dataset.start = entry.created_at;
-        row.dataset.startLabel = label;
+        row.dataset.rawText = entry.raw_text;
+        row.dataset.start = startVal;
+        row.dataset.startLabel = startLabel;
         row.classList.add('committed', 'start-set');
-        time.textContent = label;
+
+        if (entry.ended_at) {
+            row.dataset.end = entry.ended_at;
+            row.dataset.endLabel = formatTimeOnly(parseServerDate(entry.ended_at));
+            row.classList.add('end-set');
+        }
+
+        row._renderTimeLabel();
     });
 
     ensureTrailingRows(sheet);
@@ -403,22 +548,18 @@ function hydrateNotebookSheet(entries) {
     }
 }
 
-// Aceita "YYYY-MM-DD HH:MM" (formato da API) ou "YYYYMMDDHHMM" -> "HH:MM"
+// Timestamp do servidor (RFC3339 UTC ou legado) -> "HH:MM" no fuso do browser.
 function timeLabelFromCreatedAt(createdAt) {
-    if (!createdAt) return '--:--';
-    const m = String(createdAt).match(/(\d{2}):(\d{2})/);
-    if (m) return `${m[1]}:${m[2]}`;
-    if (String(createdAt).length >= 12) {
-        return `${createdAt.slice(8, 10)}:${createdAt.slice(10, 12)}`;
-    }
-    return '--:--';
+    const d = parseServerDate(createdAt);
+    return d ? formatTimeOnly(d) : '--:--';
 }
 
+// Cria a entry no servidor e devolve o id gerado (ou null em caso de erro).
 async function addEntry(textOverride = null) {
     const text = (textOverride || '').trim();
 
     if (!text) {
-        return;
+        return null;
     }
 
     try {
@@ -432,17 +573,45 @@ async function addEntry(textOverride = null) {
 
         if (response.status === 401) {
             window.location.href = '/login';
-            return;
+            return null;
         }
 
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
+        const data = await response.json();
         loadEntries(currentFilterTag);
+        return data && data.id ? data.id : null;
     } catch (error) {
         console.error('Erro ao salvar entry:', error);
         alert('Erro ao salvar a anotação');
+        return null;
+    }
+}
+
+// Atualiza texto e/ou fim de atividade de uma entry existente.
+// Devolve a entry atualizada (objeto) ou null em caso de erro.
+async function updateEntry(id, body) {
+    try {
+        const response = await fetch(`/api/entry?id=${encodeURIComponent(id)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        if (response.status === 401) {
+            window.location.href = '/login';
+            return null;
+        }
+        if (!response.ok) {
+            console.error('Erro ao atualizar entry:', response.status);
+            return null;
+        }
+        return await response.json();
+    } catch (error) {
+        console.error('Erro ao atualizar entry:', error);
+        return null;
     }
 }
 
@@ -466,7 +635,8 @@ function renderEntries(entries) {
 
         const timeDiv = document.createElement('div');
         timeDiv.className = 'entry-time';
-        timeDiv.textContent = entry.created_at;
+        const createdDate = parseServerDate(entry.created_at);
+        timeDiv.textContent = createdDate ? formatDateTime(createdDate) : entry.created_at;
 
         const textDiv = document.createElement('div');
         textDiv.className = 'entry-text';
@@ -474,7 +644,8 @@ function renderEntries(entries) {
 
         const rangeDiv = document.createElement('div');
         rangeDiv.className = 'activity-range';
-        rangeDiv.textContent = 'Fim: clique para registrar';
+        const endDate = parseServerDate(entry.ended_at);
+        rangeDiv.textContent = endDate ? `Fim: ${formatDateTime(endDate)}` : 'Fim: clique para registrar';
 
         item.appendChild(timeDiv);
         item.appendChild(textDiv);
@@ -487,14 +658,24 @@ function renderEntries(entries) {
             item.appendChild(amountDiv);
         }
 
-        item.addEventListener('click', () => {
+        item.addEventListener('click', async () => {
             const endTime = new Date();
-            const formattedEnd = formatDateTime(endTime);
-            rangeDiv.textContent = `Fim: ${formattedEnd}`;
+            const updated = await updateEntry(entry.id, { ended_at: endTime.toISOString() });
+            if (!updated) {
+                setStatus('Status: falha ao guardar o fim da atividade');
+                return;
+            }
 
-            const statusStrip = document.getElementById('statusStrip');
-            if (statusStrip) {
-                statusStrip.textContent = `Status: activity ended at ${formattedEnd}`;
+            rangeDiv.textContent = `Fim: ${formatDateTime(endTime)}`;
+            setStatus(`Status: activity ended at ${formatTimeOnly(endTime)}`);
+
+            // Reflete o fim na linha correspondente da folha, se estiver montada.
+            const sheetRow = sheetRows.find((r) => r.dataset.entryId === String(entry.id));
+            if (sheetRow) {
+                sheetRow.dataset.end = endTime.toISOString();
+                sheetRow.dataset.endLabel = formatTimeOnly(endTime);
+                sheetRow.classList.add('end-set');
+                if (sheetRow._renderTimeLabel) sheetRow._renderTimeLabel();
             }
         });
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
 # Provisiona o servidor para rodar o endless-notebook.
-# Alvo: Debian 12 / Ubuntu 22.04+ recém-instalado. Rode como root:
+# Alvo: Debian 12 / Ubuntu 22.04+ recém-instalado.
 #
-#   APP_DOMAIN=notebook.exemplo.com \
-#   ACME_EMAIL=voce@exemplo.com \
-#   INVITE_CODE='um-codigo-secreto' \
-#   DEPLOY_PUBKEY='ssh-ed25519 AAAA... deploy@ci' \
-#   bash provision.sh
+#   export APP_DOMAIN=notebook.exemplo.com
+#   export ACME_EMAIL=voce@exemplo.com
+#   export INVITE_CODE='um-codigo-secreto'
+#   export DEPLOY_PUBKEY="$(cat ~/endless-deploy.pub)"
+#   sudo --preserve-env=APP_DOMAIN,ACME_EMAIL,INVITE_CODE,DEPLOY_PUBKEY bash ~/deploy/provision.sh
 #
 # É idempotente: pode rodar de novo sem quebrar nada.
 set -euo pipefail
@@ -23,7 +23,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo ">> pacotes base"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates ufw fail2ban sqlite3 gnupg debian-keyring debian-archive-keyring apt-transport-https
+apt-get install -y curl ca-certificates ufw fail2ban sqlite3 gnupg
 
 echo ">> firewall (SSH + HTTP + HTTPS)"
 ufw allow OpenSSH

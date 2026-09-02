@@ -364,6 +364,16 @@
 
         .notebook-row.committed .row-content {
             color: var(--ink-committed);
+            cursor: text;
+        }
+
+        .notebook-row.editing {
+            background: rgba(209, 166, 58, 0.14);
+            box-shadow: inset 4px 0 0 #d1a63a;
+        }
+
+        .notebook-row.editing .row-content {
+            color: var(--ink);
         }
 
         .notebook-row.start-set .row-time {
@@ -609,6 +619,6 @@
         <button class="reopen-btn" id="reopenSidebarBtn" onclick="toggleSidebar()" title="Mostrar entradas" aria-label="Mostrar entradas">&#171;</button>
     </div>
 
-    <script src="/static/notebook.js?v=4"></script>
+    <script src="/static/notebook.js?v=5"></script>
 </body>
 </html>
