@@ -4,6 +4,8 @@ let activityEnd = null;
 let sheetRows = [];
 let sheetHydrated = false;
 let sheetInner = null;
+let activeTagsOnly = false;
+let lastEntries = [];
 
 // Caderno "endless": começa com um bloco de linhas e cria mais
 // dinamicamente conforme o final se aproxima.
@@ -15,6 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
     restoreTheme();
     restoreHeaderState();
     restoreSidebarState();
+    restoreActiveTagsFilterState();
     loadCurrentUser();
     buildNotebookSheet();
     loadEntries();
@@ -23,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // Mostra o usuário logado no cabeçalho.
 async function loadCurrentUser() {
     try {
-        const res = await fetch('/api/me');
+        const res = await fetch('/api/me', { cache: 'no-store' });
         if (res.status === 401) {
             window.location.href = '/login';
             return;
@@ -118,6 +121,33 @@ function toggleSidebar() {
     applySidebarState(hidden);
     try {
         localStorage.setItem('sidebarHidden', hidden ? '1' : '0');
+    } catch (e) { /* ignore */ }
+}
+
+// ============================================
+// FILTRO "SÓ TAGS ATIVAS" (esconde tags cujas entries já foram concluídas)
+// ============================================
+
+function restoreActiveTagsFilterState() {
+    let on = false;
+    try {
+        on = localStorage.getItem('activeTagsOnly') === '1';
+    } catch (e) { /* ignore */ }
+    applyActiveTagsFilterState(on);
+}
+
+function applyActiveTagsFilterState(on) {
+    activeTagsOnly = on;
+    const btn = document.getElementById('activeTagsToggleBtn');
+    if (btn) btn.classList.toggle('active', on);
+    extractTags(lastEntries);
+}
+
+function toggleActiveTagsFilter() {
+    const on = !activeTagsOnly;
+    applyActiveTagsFilterState(on);
+    try {
+        localStorage.setItem('activeTagsOnly', on ? '1' : '0');
     } catch (e) { /* ignore */ }
 }
 
@@ -223,7 +253,11 @@ function createRow(sheet, index) {
         // Persiste o fim quando a linha já existe no servidor.
         if (row.dataset.entryId) {
             updateEntry(row.dataset.entryId, { ended_at: row.dataset.end }).then((ok) => {
-                if (!ok) setStatus('Status: falha ao guardar o fim da atividade');
+                if (!ok) {
+                    setStatus('Status: falha ao guardar o fim da atividade');
+                } else {
+                    maybeShowTagRemovalModal(row.dataset.entryId, extractTagsFromText(row.dataset.rawText));
+                }
             });
         }
     };
@@ -238,6 +272,14 @@ function createRow(sheet, index) {
 
     row.addEventListener('focusout', () => {
         row.classList.remove('active');
+        // Linha vazia abandonada: desfaz o início registrado ao focar, para
+        // não gravar depois uma entry com hora de início desatualizada.
+        if (!row.dataset.saved && !row.dataset.end && row.dataset.start && content.textContent.trim() === '') {
+            row.dataset.start = '';
+            delete row.dataset.startLabel;
+            row.classList.remove('start-set');
+            renderTimeLabel();
+        }
     });
 
     // Clicar na hora: sem início ainda -> começa a tarefa; com início -> encerra
@@ -481,7 +523,7 @@ async function loadEntries(tag = null) {
             currentFilterTag = null;
         }
 
-        const response = await fetch(url);
+        const response = await fetch(url, { cache: 'no-store' });
         if (response.status === 401) {
             window.location.href = '/login';
             return;
@@ -569,6 +611,7 @@ async function addEntry(textOverride = null) {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ text: text }),
+            cache: 'no-store',
         });
 
         if (response.status === 401) {
@@ -598,6 +641,7 @@ async function updateEntry(id, body) {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            cache: 'no-store',
         });
 
         if (response.status === 401) {
@@ -677,6 +721,8 @@ function renderEntries(entries) {
                 sheetRow.classList.add('end-set');
                 if (sheetRow._renderTimeLabel) sheetRow._renderTimeLabel();
             }
+
+            maybeShowTagRemovalModal(entry.id, entry.tags);
         });
 
         list.appendChild(item);
@@ -703,12 +749,18 @@ function renderEntries(entries) {
 }
 
 function extractTags(entries) {
+    lastEntries = entries;
     const tags = new Set();
 
+    // Mantém sempre visível a tag do filtro atual, mesmo que ela se qualifique
+    // para ser escondida pelo toggle "só ativas" — evita ficar preso num
+    // filtro sem forma de desligá-lo pela lista.
+    if (currentFilterTag) tags.add(currentFilterTag);
+
     entries.forEach(entry => {
-        if (entry.tags && entry.tags.length > 0) {
-            entry.tags.forEach(tag => tags.add(tag));
-        }
+        if (!entry.tags || entry.tags.length === 0) return;
+        if (activeTagsOnly && entry.ended_at) return;
+        entry.tags.forEach(tag => tags.add(tag));
     });
 
     const tagsList = document.getElementById('tagsList');
@@ -738,6 +790,63 @@ function filterByTag(tag) {
     } else {
         loadEntries(tag);
     }
+}
+
+// ============================================
+// MODAL DE REMOÇÃO DE TAGS AO CONCLUIR UMA ENTRY
+// ============================================
+
+// Extrai tags (#tag) de um texto no cliente, espelhando o regex do backend
+// (internal/entry/entry.go), para não precisar reconsultar o servidor.
+function extractTagsFromText(text) {
+    const set = new Set();
+    const re = /#(\w+)/g;
+    let m;
+    while ((m = re.exec(text || ''))) set.add(m[1]);
+    return [...set];
+}
+
+function maybeShowTagRemovalModal(entryId, tags) {
+    const unique = [...new Set(tags || [])];
+    if (!entryId || unique.length === 0) return;
+    openTagRemovalModal(entryId, unique);
+}
+
+function openTagRemovalModal(entryId, tags) {
+    const overlay = document.getElementById('tagRemovalOverlay');
+    const list = document.getElementById('tagRemovalList');
+    if (!overlay || !list) return;
+
+    list.innerHTML = '';
+    tags.forEach(tag => {
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = tag;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(`#${tag}`));
+        list.appendChild(label);
+    });
+
+    const confirmBtn = document.getElementById('tagRemovalConfirmBtn');
+    const keepBtn = document.getElementById('tagRemovalKeepBtn');
+
+    const close = () => { overlay.hidden = true; };
+
+    confirmBtn.onclick = async () => {
+        const selected = [...list.querySelectorAll('input:checked')].map(cb => cb.value);
+        close();
+        if (selected.length === 0) return;
+        const updated = await updateEntry(entryId, { remove_tags: selected });
+        if (updated) {
+            loadEntries(currentFilterTag);
+        } else {
+            setStatus('Status: falha ao remover tags');
+        }
+    };
+    keepBtn.onclick = close;
+
+    overlay.hidden = false;
 }
 
 function formatEntryText(text) {

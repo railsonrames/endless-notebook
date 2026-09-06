@@ -34,6 +34,7 @@
             --sb-track: #efe9d7;
             --sb-thumb: #7a7a7a;
             --row-hover: rgba(255, 255, 255, 0.12);
+            --row-alt-bg: rgba(53, 61, 92, 0.035);
         }
 
         html[data-theme="dark"] {
@@ -55,6 +56,7 @@
             --sb-track: #22242d;
             --sb-thumb: #454956;
             --row-hover: rgba(255, 255, 255, 0.05);
+            --row-alt-bg: rgba(255, 255, 255, 0.025);
         }
 
         body {
@@ -312,6 +314,10 @@
             transition: background 0.1s ease;
         }
 
+        .notebook-row:nth-child(even) {
+            background: var(--row-alt-bg);
+        }
+
         .notebook-row:hover {
             background: var(--row-hover);
         }
@@ -557,6 +563,58 @@
             text-shadow: 0 0 3px #ffff00;
         }
 
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+
+        .modal-overlay[hidden] {
+            display: none;
+        }
+
+        .modal-box {
+            background: linear-gradient(180deg, var(--paper-top) 0%, var(--paper-bottom) 100%);
+            color: var(--ink);
+            border: 3px solid #555;
+            padding: 16px;
+            min-width: 260px;
+            max-width: 90vw;
+            font-family: 'Courier New', monospace;
+            box-shadow: 5px 5px 15px rgba(0,0,0,0.7);
+        }
+
+        .modal-box h3 {
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+
+        .modal-tag-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 14px;
+        }
+
+        .modal-tag-list label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--ink);
+            cursor: pointer;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
         /* Scrollbar retro */
         .sidebar::-webkit-scrollbar {
             width: 12px;
@@ -599,7 +657,10 @@
 
         <div class="sidebar">
             <div class="filter-tags">
-                <h2>Tags</h2>
+                <div class="sidebar-head">
+                    <h2>Tags</h2>
+                    <button class="tag-button" id="activeTagsToggleBtn" onclick="toggleActiveTagsFilter()" title="Mostrar só tags de itens ainda em aberto">Só ativas</button>
+                </div>
                 <div id="tagsList" class="sidebar-content">
                     <!-- Tags serão inseridas aqui via JS -->
                 </div>
@@ -619,6 +680,17 @@
         <button class="reopen-btn" id="reopenSidebarBtn" onclick="toggleSidebar()" title="Mostrar entradas" aria-label="Mostrar entradas">&#171;</button>
     </div>
 
-    <script src="/static/notebook.js?v=5"></script>
+    <div id="tagRemovalOverlay" class="modal-overlay" hidden>
+        <div class="modal-box">
+            <h3>Concluído — remover alguma tag?</h3>
+            <div id="tagRemovalList" class="modal-tag-list"></div>
+            <div class="modal-actions">
+                <button class="tag-button" id="tagRemovalConfirmBtn">Remover selecionadas</button>
+                <button class="tag-button" id="tagRemovalKeepBtn">Manter todas</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/notebook.js?v=6"></script>
 </body>
 </html>

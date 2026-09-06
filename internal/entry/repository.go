@@ -159,10 +159,12 @@ func prefixColumns(alias string) string {
 		alias + ".ended_at, " + alias + ".raw_text, " + alias + ".amount"
 }
 
-// Update altera texto e/ou fim de atividade de uma entry do usuário dono.
-// text != nil reescreve raw_text, amount e as tags. endedAt != nil grava o fim
-// (string vazia limpa o campo). Devolve a entry já atualizada.
-func (r *Repository) Update(userID, id int64, text, endedAt *string) (*Entry, error) {
+// Update altera texto, fim de atividade e/ou remove tags específicas de uma
+// entry do usuário dono. text != nil reescreve raw_text, amount e as tags.
+// endedAt != nil grava o fim (string vazia limpa o campo). removeTags apaga
+// só as tags indicadas (sem tocar em raw_text/amount). Devolve a entry já
+// atualizada.
+func (r *Repository) Update(userID, id int64, text, endedAt *string, removeTags []string) (*Entry, error) {
 	var owner int64
 	err := r.db.QueryRow("SELECT user_id FROM entries WHERE id = ?", id).Scan(&owner)
 	if err == sql.ErrNoRows || (err == nil && owner != userID) {
@@ -198,6 +200,12 @@ func (r *Repository) Update(userID, id int64, text, endedAt *string) (*Entry, er
 		}
 		if execErr != nil {
 			return nil, fmt.Errorf("failed to update ended_at: %w", execErr)
+		}
+	}
+
+	for _, tag := range removeTags {
+		if _, err := r.db.Exec("DELETE FROM tags WHERE entry_id = ? AND tag = ?", id, tag); err != nil {
+			return nil, fmt.Errorf("failed to remove tag: %w", err)
 		}
 	}
 

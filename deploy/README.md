@@ -2,6 +2,9 @@
 
 Como sair de "acabei de contratar a VPS" até "online com CI/CD pelo GitHub Actions".
 
+> Detalhe do pipeline em si (o que o `deploy.yml` faz linha a linha e como
+> recriá-lo do zero): [`PIPELINE.md`](./PIPELINE.md).
+
 ## Arquitetura
 
 ```

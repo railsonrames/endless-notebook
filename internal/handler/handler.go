@@ -41,6 +41,14 @@ type EntryResponse struct {
 	Tags      []string `json:"tags"`
 }
 
+// noStore evita que respostas de API sejam guardadas por caches intermediários
+// (proxy de operadora móvel, cache heurístico do navegador), o que pode causar
+// divergência de dados entre dispositivos acessando o mesmo endereço.
+func noStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+
 // toResponse converte uma entry interna para response JSON
 func toResponse(e *entry.Entry) *EntryResponse {
 	return &EntryResponse{
@@ -61,14 +69,17 @@ type CreateEntryRequest struct {
 
 // UpdateEntryRequest é o corpo de PUT/PATCH /api/entry.
 // Campos omitidos (nil) não são alterados. ended_at vazio ("") limpa o fim.
+// remove_tags apaga só as tags indicadas, sem alterar raw_text/amount.
 type UpdateEntryRequest struct {
-	Text    *string `json:"text"`
-	EndedAt *string `json:"ended_at"`
+	Text       *string  `json:"text"`
+	EndedAt    *string  `json:"ended_at"`
+	RemoveTags []string `json:"remove_tags"`
 }
 
 // Me retorna dados do usuário logado
 func (s *Server) Me(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserID(r.Context())
+	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":       userID,
@@ -106,6 +117,7 @@ func (s *Server) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -135,6 +147,7 @@ func (s *Server) GetEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(toResponse(e))
 }
@@ -170,6 +183,7 @@ func (s *Server) ListEntries(w http.ResponseWriter, r *http.Request) {
 		responses[i] = toResponse(e)
 	}
 
+	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(responses)
 }
@@ -195,7 +209,7 @@ func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Text == nil && req.EndedAt == nil {
+	if req.Text == nil && req.EndedAt == nil && len(req.RemoveTags) == 0 {
 		http.Error(w, "nothing to update", http.StatusBadRequest)
 		return
 	}
@@ -204,7 +218,7 @@ func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	e, err := s.entryRepo.Update(userID, id, req.Text, req.EndedAt)
+	e, err := s.entryRepo.Update(userID, id, req.Text, req.EndedAt, req.RemoveTags)
 	if err != nil {
 		if err.Error() == "entry not found" {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -215,6 +229,7 @@ func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(toResponse(e))
 }
@@ -239,6 +254,7 @@ func (s *Server) DeleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
