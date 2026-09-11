@@ -68,10 +68,12 @@ type CreateEntryRequest struct {
 }
 
 // UpdateEntryRequest é o corpo de PUT/PATCH /api/entry.
-// Campos omitidos (nil) não são alterados. ended_at vazio ("") limpa o fim.
-// remove_tags apaga só as tags indicadas, sem alterar raw_text/amount.
+// Campos omitidos (nil) não são alterados. started_at/ended_at devem ser
+// RFC3339; ended_at vazio ("") limpa o fim. remove_tags apaga só as tags
+// indicadas, sem alterar raw_text/amount.
 type UpdateEntryRequest struct {
 	Text       *string  `json:"text"`
+	StartedAt  *string  `json:"started_at"`
 	EndedAt    *string  `json:"ended_at"`
 	RemoveTags []string `json:"remove_tags"`
 }
@@ -209,7 +211,7 @@ func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Text == nil && req.EndedAt == nil && len(req.RemoveTags) == 0 {
+	if req.Text == nil && req.StartedAt == nil && req.EndedAt == nil && len(req.RemoveTags) == 0 {
 		http.Error(w, "nothing to update", http.StatusBadRequest)
 		return
 	}
@@ -217,15 +219,22 @@ func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "text cannot be empty", http.StatusBadRequest)
 		return
 	}
+	if req.StartedAt != nil && strings.TrimSpace(*req.StartedAt) == "" {
+		http.Error(w, "started_at cannot be empty", http.StatusBadRequest)
+		return
+	}
 
-	e, err := s.entryRepo.Update(userID, id, req.Text, req.EndedAt, req.RemoveTags)
+	e, err := s.entryRepo.Update(userID, id, req.Text, req.StartedAt, req.EndedAt, req.RemoveTags)
 	if err != nil {
-		if err.Error() == "entry not found" {
+		switch err.Error() {
+		case "entry not found":
 			http.Error(w, err.Error(), http.StatusNotFound)
-			return
+		case "invalid started_at", "invalid ended_at":
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			log.Printf("error updating entry: %v", err)
+			http.Error(w, "failed to update entry", http.StatusInternalServerError)
 		}
-		log.Printf("error updating entry: %v", err)
-		http.Error(w, "failed to update entry", http.StatusInternalServerError)
 		return
 	}
 

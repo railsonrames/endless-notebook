@@ -6,11 +6,20 @@ let sheetHydrated = false;
 let sheetInner = null;
 let activeTagsOnly = false;
 let lastEntries = [];
+// allEntries: lista completa (sem filtro de tag), usada para (re)montar o caderno.
+let allEntries = [];
+// showOpenOnly: esconde do caderno as linhas que já têm hora de fim.
+let showOpenOnly = false;
+// Linha do caderno atualmente aberta no modal de edição de horário.
+let timeModalRow = null;
 
 // Caderno "endless": começa com um bloco de linhas e cria mais
 // dinamicamente conforme o final se aproxima.
 const INITIAL_ROWS = 25;
 const TRAILING_ROWS = 12;
+
+// Intervalo do polling de sincronização entre dispositivos/sessões (ms).
+const LIVE_SYNC_INTERVAL_MS = 20000;
 
 // Carrega entries ao abrir a página
 document.addEventListener('DOMContentLoaded', () => {
@@ -18,9 +27,12 @@ document.addEventListener('DOMContentLoaded', () => {
     restoreHeaderState();
     restoreSidebarState();
     restoreActiveTagsFilterState();
+    restoreOpenOnlyState();
+    setupTimeEditModal();
     loadCurrentUser();
     buildNotebookSheet();
     loadEntries();
+    startLiveSync();
 });
 
 // Mostra o usuário logado no cabeçalho.
@@ -151,6 +163,30 @@ function toggleActiveTagsFilter() {
     } catch (e) { /* ignore */ }
 }
 
+// ============================================
+// FILTRO "OPEN ONLY" DO CADERNO (esconde linhas já concluídas)
+// ============================================
+
+function restoreOpenOnlyState() {
+    let on = false;
+    try {
+        on = localStorage.getItem('showOpenOnly') === '1';
+    } catch (e) { /* ignore */ }
+    showOpenOnly = on;
+    const btn = document.getElementById('openOnlyToggleBtn');
+    if (btn) btn.classList.toggle('active', on);
+}
+
+function toggleOpenOnly() {
+    showOpenOnly = !showOpenOnly;
+    const btn = document.getElementById('openOnlyToggleBtn');
+    if (btn) btn.classList.toggle('active', showOpenOnly);
+    try {
+        localStorage.setItem('showOpenOnly', showOpenOnly ? '1' : '0');
+    } catch (e) { /* ignore */ }
+    renderSheet(allEntries, { focusEmpty: false });
+}
+
 // Rola o caderno só o necessário para deixar a linha visível.
 function revealRowIfNeeded(sheet, row) {
     if (!sheet || !row) return;
@@ -254,9 +290,10 @@ function createRow(sheet, index) {
         if (row.dataset.entryId) {
             updateEntry(row.dataset.entryId, { ended_at: row.dataset.end }).then((ok) => {
                 if (!ok) {
-                    setStatus('Status: falha ao guardar o fim da atividade');
+                    setStatus('Status: failed to save activity end');
                 } else {
                     maybeShowTagRemovalModal(row.dataset.entryId, extractTagsFromText(row.dataset.rawText));
+                    reloadAll();
                 }
             });
         }
@@ -282,12 +319,16 @@ function createRow(sheet, index) {
         }
     });
 
-    // Clicar na hora: sem início ainda -> começa a tarefa; com início -> encerra
-    // (mesma ideia de clicar num card da lista de entradas).
+    // Clicar na hora:
+    //  - linha já salva no servidor -> abre o modal (editar início/fim, apagar);
+    //  - linha nova sem início -> começa a atividade;
+    //  - linha nova já iniciada -> encerra.
     time.addEventListener('click', (event) => {
         event.stopPropagation();
         if (row.dataset.editing) return;
-        if (row.dataset.start) {
+        if (row.dataset.entryId) {
+            openTimeEditModal(row);
+        } else if (row.dataset.start) {
             endActivity(true);
         } else {
             beginActivity();
@@ -373,7 +414,7 @@ function enterEditMode(row) {
     content.textContent = row.dataset.rawText || content.textContent;
     content.focus();
     placeCaretEnd(content);
-    setStatus('Status: editing entry (Enter salva, Esc cancela)');
+    setStatus('Status: editing entry (Enter to save, Esc to cancel)');
 }
 
 async function commitEdit(row) {
@@ -388,7 +429,7 @@ async function commitEdit(row) {
 
     if (!value) {
         content.textContent = original;
-        setStatus('Status: edição vazia ignorada');
+        setStatus('Status: empty edit ignored');
         return;
     }
     if (value === original) {
@@ -406,11 +447,11 @@ async function commitEdit(row) {
     if (updated) {
         row.dataset.rawText = value;
         content.textContent = value;
-        setStatus('Status: entry atualizada');
+        setStatus('Status: entry updated');
         loadEntries(currentFilterTag);
     } else {
         content.textContent = original;
-        setStatus('Status: falha ao atualizar a entry');
+        setStatus('Status: failed to update entry');
     }
 }
 
@@ -421,7 +462,7 @@ function cancelEdit(row) {
     content.contentEditable = 'false';
     content.textContent = row.dataset.rawText || '';
     content.blur();
-    setStatus('Status: edição cancelada');
+    setStatus('Status: edit canceled');
 }
 
 function placeCaretEnd(el) {
@@ -534,6 +575,9 @@ async function loadEntries(tag = null) {
         }
 
         const entries = await response.json();
+        if (!tag) {
+            allEntries = entries;
+        }
         renderEntries(entries);
         extractTags(entries);
         redrawCanvas();
@@ -550,26 +594,66 @@ async function loadEntries(tag = null) {
 // Preenche as linhas do caderno com as entradas já salvas (é o "endless": o
 // que foi escrito continua na folha depois de recarregar).
 function hydrateNotebookSheet(entries) {
+    renderSheet(entries, { focusEmpty: true });
+}
+
+// Reconstrói a folha do zero a partir de uma lista de entradas.
+// Insere uma linha divisória sempre que a data muda e, com "Open only" ligado,
+// esconde as linhas que já têm hora de fim. Texto ainda não salvo é preservado.
+function renderSheet(entries, opts) {
+    const options = opts || {};
+    const focusEmpty = options.focusEmpty === true;
+
     const sheet = document.getElementById('notebookSheet');
-    if (!sheet || !Array.isArray(entries) || entries.length === 0) return;
+    if (!sheet) return;
+    if (!Array.isArray(entries)) entries = [];
+
+    if (!sheetInner || !sheetInner.isConnected) {
+        sheetInner = sheet.querySelector('.sheet-inner');
+    }
+    if (!sheetInner) return;
 
     // API devolve mais recentes primeiro; na folha queremos ordem cronológica.
-    const ordered = entries.slice().reverse();
+    let ordered = entries.slice().reverse();
+    if (showOpenOnly) {
+        ordered = ordered.filter((e) => !e.ended_at);
+    }
 
-    ordered.forEach((entry, i) => {
-        const row = sheetRows[i] || appendRow(sheet);
-        const content = row.querySelector('.row-content');
+    // Preserva o que o usuário está digitando numa linha ainda não salva.
+    const drafts = [];
+    sheetRows.forEach((r) => {
+        const c = r.querySelector('.row-content');
+        if (!r.dataset.saved && c && c.textContent.trim() !== '') {
+            drafts.push({
+                text: c.textContent,
+                start: r.dataset.start || '',
+                startLabel: r.dataset.startLabel || '',
+            });
+        }
+    });
 
+    sheetRows = [];
+    sheetInner.innerHTML = '';
+
+    let lastDateKey = null;
+    ordered.forEach((entry) => {
         const startVal = entry.started_at || entry.created_at;
-        const startLabel = timeLabelFromCreatedAt(startVal);
+        const startDate = parseServerDate(startVal);
+        const key = startDate ? dateKey(startDate) : null;
+        if (key && key !== lastDateKey) {
+            sheetInner.appendChild(createDividerRow(startDate));
+            lastDateKey = key;
+        }
 
+        const row = appendRow(sheet);
+        const content = row.querySelector('.row-content');
         content.textContent = entry.raw_text;
         content.contentEditable = 'false';
         row.dataset.saved = '1';
         row.dataset.entryId = String(entry.id);
         row.dataset.rawText = entry.raw_text;
         row.dataset.start = startVal;
-        row.dataset.startLabel = startLabel;
+        row.dataset.startLabel = startDate ? formatTimeOnly(startDate) : '--:--';
         row.classList.add('committed', 'start-set');
 
         if (entry.ended_at) {
@@ -581,19 +665,128 @@ function hydrateNotebookSheet(entries) {
         row._renderTimeLabel();
     });
 
+    // Recoloca os rascunhos em linhas novas ao final.
+    drafts.forEach((d) => {
+        const row = appendRow(sheet);
+        row.querySelector('.row-content').textContent = d.text;
+        if (d.start) {
+            row.dataset.start = d.start;
+            row.dataset.startLabel = d.startLabel;
+            row.classList.add('start-set');
+            row._renderTimeLabel();
+        }
+    });
+
+    if (ordered.length === 0 && drafts.length === 0) {
+        for (let i = 0; i < INITIAL_ROWS; i++) appendRow(sheet);
+    }
+
     ensureTrailingRows(sheet);
 
-    const firstEmpty = sheetRows.find((r) => !r.dataset.saved && !r.dataset.start);
-    if (firstEmpty) {
-        firstEmpty.querySelector('.row-content').focus({ preventScroll: true });
-        revealRowIfNeeded(sheet, firstEmpty);
+    if (focusEmpty) {
+        const firstEmpty = sheetRows.find((r) =>
+            !r.dataset.saved && !r.dataset.start &&
+            r.querySelector('.row-content').textContent.trim() === ''
+        );
+        if (firstEmpty) {
+            firstEmpty.querySelector('.row-content').focus({ preventScroll: true });
+            revealRowIfNeeded(sheet, firstEmpty);
+        }
     }
 }
 
-// Timestamp do servidor (RFC3339 UTC ou legado) -> "HH:MM" no fuso do browser.
-function timeLabelFromCreatedAt(createdAt) {
-    const d = parseServerDate(createdAt);
-    return d ? formatTimeOnly(d) : '--:--';
+// Chave "ano-mês-dia" no fuso do browser, para detectar troca de dia.
+function dateKey(d) {
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+// Linha divisória com a data por extenso (não editável, fora de sheetRows).
+function createDividerRow(date) {
+    const div = document.createElement('div');
+    div.className = 'notebook-row day-divider';
+    const label = document.createElement('div');
+    label.className = 'day-divider-label';
+    label.textContent = date.toLocaleDateString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    });
+    div.appendChild(label);
+    return div;
+}
+
+// Recarrega a lista lateral (respeitando o filtro de tag) e remonta o caderno
+// a partir da lista completa de entradas. focusEmpty repõe o foco na primeira
+// linha em branco depois de remontar (útil no sync automático em segundo plano;
+// dispensável logo após uma ação explícita do usuário).
+async function reloadAll(opts) {
+    const focusEmpty = !!(opts && opts.focusEmpty);
+    const tag = currentFilterTag;
+    await loadEntries(tag);
+    if (tag) {
+        await loadAllEntries();
+    }
+    renderSheet(allEntries, { focusEmpty });
+}
+
+// ============================================
+// SINCRONIZAÇÃO ENTRE SESSÕES/DISPOSITIVOS
+// ============================================
+// Não há push do servidor (sem WebSocket/SSE): cada sessão só sabe o que
+// escreveu localmente. Para uma entry criada noutro dispositivo aparecer aqui,
+// esta aba precisa recarregar — o que fazemos (a) sempre que a aba volta a
+// ficar visível/em foco (o caso comum: trocar de app e voltar) e (b) por
+// polling de baixa frequência como rede de segurança enquanto fica aberta.
+let liveSyncInFlight = false;
+
+// Evita atropelar o usuário: só sincroniza se não houver texto não salvo numa
+// linha nova, nem uma edição inline em andamento, nem um modal aberto.
+function canLiveSync() {
+    if (document.visibilityState !== 'visible') return false;
+
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('row-content')) {
+        if (active.textContent.trim() !== '') return false;
+        const row = active.closest('.notebook-row');
+        if (row && row.dataset.editing) return false;
+    }
+
+    const timeModal = document.getElementById('timeEditOverlay');
+    const tagModal = document.getElementById('tagRemovalOverlay');
+    if (timeModal && !timeModal.hidden) return false;
+    if (tagModal && !tagModal.hidden) return false;
+
+    return true;
+}
+
+async function liveSync() {
+    if (liveSyncInFlight || !canLiveSync()) return;
+    liveSyncInFlight = true;
+    try {
+        await reloadAll({ focusEmpty: true });
+    } finally {
+        liveSyncInFlight = false;
+    }
+}
+
+function startLiveSync() {
+    setInterval(liveSync, LIVE_SYNC_INTERVAL_MS);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') liveSync();
+    });
+    window.addEventListener('focus', liveSync);
+}
+
+// Busca a lista completa de entradas (sem filtro de tag) e guarda em allEntries.
+async function loadAllEntries() {
+    try {
+        const res = await fetch('/api/entries', { cache: 'no-store' });
+        if (res.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
+        if (res.ok) {
+            allEntries = await res.json();
+        }
+    } catch (e) { /* ignore */ }
 }
 
 // Cria a entry no servidor e devolve o id gerado (ou null em caso de erro).
@@ -627,9 +820,27 @@ async function addEntry(textOverride = null) {
         loadEntries(currentFilterTag);
         return data && data.id ? data.id : null;
     } catch (error) {
-        console.error('Erro ao salvar entry:', error);
-        alert('Erro ao salvar a anotação');
+        console.error('Error saving entry:', error);
+        alert('Failed to save entry');
         return null;
+    }
+}
+
+// Apaga uma entry no servidor. Devolve true em caso de sucesso.
+async function deleteEntry(id) {
+    try {
+        const response = await fetch(`/api/entry?id=${encodeURIComponent(id)}`, {
+            method: 'DELETE',
+            cache: 'no-store',
+        });
+        if (response.status === 401) {
+            window.location.href = '/login';
+            return false;
+        }
+        return response.ok;
+    } catch (error) {
+        console.error('Error deleting entry:', error);
+        return false;
     }
 }
 
@@ -668,7 +879,7 @@ function renderEntries(entries) {
     list.innerHTML = '';
 
     if (entries.length === 0) {
-        list.innerHTML = '<div style="color: #888; font-size: 11px;">Nenhuma anotação ainda</div>';
+        list.innerHTML = '<div style="color: #888; font-size: 11px;">No entries yet</div>';
         return;
     }
 
@@ -689,7 +900,7 @@ function renderEntries(entries) {
         const rangeDiv = document.createElement('div');
         rangeDiv.className = 'activity-range';
         const endDate = parseServerDate(entry.ended_at);
-        rangeDiv.textContent = endDate ? `Fim: ${formatDateTime(endDate)}` : 'Fim: clique para registrar';
+        rangeDiv.textContent = endDate ? `End: ${formatDateTime(endDate)}` : 'End: click to set';
 
         item.appendChild(timeDiv);
         item.appendChild(textDiv);
@@ -706,11 +917,11 @@ function renderEntries(entries) {
             const endTime = new Date();
             const updated = await updateEntry(entry.id, { ended_at: endTime.toISOString() });
             if (!updated) {
-                setStatus('Status: falha ao guardar o fim da atividade');
+                setStatus('Status: failed to save activity end');
                 return;
             }
 
-            rangeDiv.textContent = `Fim: ${formatDateTime(endTime)}`;
+            rangeDiv.textContent = `End: ${formatDateTime(endTime)}`;
             setStatus(`Status: activity ended at ${formatTimeOnly(endTime)}`);
 
             // Reflete o fim na linha correspondente da folha, se estiver montada.
@@ -723,6 +934,7 @@ function renderEntries(entries) {
             }
 
             maybeShowTagRemovalModal(entry.id, entry.tags);
+            reloadAll();
         });
 
         list.appendChild(item);
@@ -751,6 +963,8 @@ function renderEntries(entries) {
 function extractTags(entries) {
     lastEntries = entries;
     const tags = new Set();
+    // counts: nº de linhas que usam cada tag (respeitando o filtro "Active only").
+    const counts = new Map();
 
     // Mantém sempre visível a tag do filtro atual, mesmo que ela se qualifique
     // para ser escondida pelo toggle "só ativas" — evita ficar preso num
@@ -760,14 +974,17 @@ function extractTags(entries) {
     entries.forEach(entry => {
         if (!entry.tags || entry.tags.length === 0) return;
         if (activeTagsOnly && entry.ended_at) return;
-        entry.tags.forEach(tag => tags.add(tag));
+        [...new Set(entry.tags)].forEach(tag => {
+            tags.add(tag);
+            counts.set(tag, (counts.get(tag) || 0) + 1);
+        });
     });
 
     const tagsList = document.getElementById('tagsList');
     tagsList.innerHTML = '';
 
     if (tags.size === 0) {
-        tagsList.innerHTML = '<div style="color: #888; font-size: 11px;">Nenhuma tag</div>';
+        tagsList.innerHTML = '<div style="color: #888; font-size: 11px;">No tags</div>';
         return;
     }
 
@@ -777,7 +994,21 @@ function extractTags(entries) {
         if (currentFilterTag === tag) {
             button.classList.add('active');
         }
-        button.textContent = `#${tag}`;
+
+        const count = counts.get(tag) || 0;
+
+        const name = document.createElement('span');
+        name.className = 'tag-name';
+        name.textContent = `#${tag}`;
+        button.appendChild(name);
+
+        const badge = document.createElement('span');
+        badge.className = 'tag-count';
+        badge.textContent = String(count);
+        button.appendChild(badge);
+
+        // Nome completo no title, já que o botão pode truncar tags longas.
+        button.title = `#${tag} (${count})`;
         button.onclick = () => filterByTag(tag);
         tagsList.appendChild(button);
     });
@@ -841,12 +1072,136 @@ function openTagRemovalModal(entryId, tags) {
         if (updated) {
             loadEntries(currentFilterTag);
         } else {
-            setStatus('Status: falha ao remover tags');
+            setStatus('Status: failed to remove tags');
         }
     };
     keepBtn.onclick = close;
 
     overlay.hidden = false;
+}
+
+// ============================================
+// MODAL DE EDIÇÃO DE HORÁRIO / EXCLUSÃO DE LINHA
+// ============================================
+
+// Date -> "YYYY-MM-DDTHH:MM" no fuso do browser (valor de <input datetime-local>).
+function toLocalInputValue(date) {
+    if (!(date instanceof Date) || isNaN(date)) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+        `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// Valor de <input datetime-local> (hora local) -> Date, ou null.
+function fromLocalInputValue(value) {
+    if (!value) return null;
+    const d = new Date(value);
+    return isNaN(d) ? null : d;
+}
+
+// Liga os botões do modal uma única vez (o alvo é guardado em timeModalRow).
+function setupTimeEditModal() {
+    const overlay = document.getElementById('timeEditOverlay');
+    if (!overlay) return;
+
+    const startInput = document.getElementById('timeEditStart');
+    const endInput = document.getElementById('timeEditEnd');
+
+    document.getElementById('timeEditEndNow').onclick = () => {
+        endInput.value = toLocalInputValue(new Date());
+    };
+    document.getElementById('timeEditEndClear').onclick = () => {
+        endInput.value = '';
+    };
+    document.getElementById('timeEditCancelBtn').onclick = closeTimeEditModal;
+    document.getElementById('timeEditSaveBtn').onclick = saveTimeEditModal;
+    document.getElementById('timeEditDeleteBtn').onclick = deleteTimeEditModalRow;
+
+    overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) closeTimeEditModal();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !overlay.hidden) closeTimeEditModal();
+    });
+}
+
+function openTimeEditModal(row) {
+    const overlay = document.getElementById('timeEditOverlay');
+    if (!overlay || !row || !row.dataset.entryId) return;
+
+    timeModalRow = row;
+
+    const startDate = parseServerDate(row.dataset.start);
+    const endDate = parseServerDate(row.dataset.end);
+    document.getElementById('timeEditStart').value = toLocalInputValue(startDate || new Date());
+    document.getElementById('timeEditEnd').value = endDate ? toLocalInputValue(endDate) : '';
+
+    overlay.hidden = false;
+    setStatus(`Status: editing line #${row.dataset.entryId}`);
+}
+
+function closeTimeEditModal() {
+    const overlay = document.getElementById('timeEditOverlay');
+    if (overlay) overlay.hidden = true;
+    timeModalRow = null;
+}
+
+async function saveTimeEditModal() {
+    const row = timeModalRow;
+    if (!row || !row.dataset.entryId) {
+        closeTimeEditModal();
+        return;
+    }
+
+    const startDate = fromLocalInputValue(document.getElementById('timeEditStart').value);
+    if (!startDate) {
+        setStatus('Status: invalid start time');
+        return;
+    }
+    const endValue = document.getElementById('timeEditEnd').value;
+    const endDate = fromLocalInputValue(endValue);
+    if (endValue && !endDate) {
+        setStatus('Status: invalid end time');
+        return;
+    }
+    if (endDate && endDate < startDate) {
+        setStatus('Status: end time is before start time');
+        return;
+    }
+
+    const body = {
+        started_at: startDate.toISOString(),
+        ended_at: endDate ? endDate.toISOString() : '',
+    };
+
+    const updated = await updateEntry(row.dataset.entryId, body);
+    if (!updated) {
+        setStatus('Status: failed to update line');
+        return;
+    }
+
+    closeTimeEditModal();
+    setStatus('Status: line updated');
+    await reloadAll();
+}
+
+async function deleteTimeEditModalRow() {
+    const row = timeModalRow;
+    if (!row || !row.dataset.entryId) {
+        closeTimeEditModal();
+        return;
+    }
+    if (!confirm('Delete this line permanently?')) return;
+
+    const ok = await deleteEntry(row.dataset.entryId);
+    if (!ok) {
+        setStatus('Status: failed to delete line');
+        return;
+    }
+
+    closeTimeEditModal();
+    setStatus('Status: line deleted');
+    await reloadAll();
 }
 
 function formatEntryText(text) {
@@ -874,20 +1229,6 @@ function formatDateTime(date) {
     return `${day}/${month}/${year} ${hour}:${minute}`;
 }
 
-function formatActivityTime(createdAt) {
-    if (!createdAt || createdAt.length < 12) {
-        return '—';
-    }
-
-    const year = createdAt.slice(0, 4);
-    const month = createdAt.slice(4, 6);
-    const day = createdAt.slice(6, 8);
-    const hour = createdAt.slice(8, 10);
-    const minute = createdAt.slice(10, 12);
-
-    return `${day}/${month}/${year} ${hour}:${minute}`;
-}
-
 function redrawCanvas() {
     // sem canvas: apenas mantém o status visual da atividade
 }
@@ -899,27 +1240,5 @@ function redrawCanvas() {
 function logout() {
     // o servidor apaga a sessão do banco e limpa o cookie
     window.location.href = '/logout';
-}
-
-function startActivity() {
-    activityStart = new Date();
-    activityEnd = null;
-    const statusStrip = document.getElementById('statusStrip');
-    if (statusStrip) {
-        statusStrip.textContent = `Status: activity started at ${activityStart.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
-    }
-    redrawCanvas();
-}
-
-function endActivity() {
-    const now = new Date();
-    if (activityStart) {
-        activityEnd = now;
-        const statusStrip = document.getElementById('statusStrip');
-        if (statusStrip) {
-            statusStrip.textContent = `Status: finished at ${activityEnd.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
-        }
-        redrawCanvas();
-    }
 }
 

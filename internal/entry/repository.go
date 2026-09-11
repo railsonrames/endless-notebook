@@ -3,6 +3,7 @@ package entry
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // Repository gerencia persistência de entries
@@ -159,12 +160,13 @@ func prefixColumns(alias string) string {
 		alias + ".ended_at, " + alias + ".raw_text, " + alias + ".amount"
 }
 
-// Update altera texto, fim de atividade e/ou remove tags específicas de uma
-// entry do usuário dono. text != nil reescreve raw_text, amount e as tags.
-// endedAt != nil grava o fim (string vazia limpa o campo). removeTags apaga
-// só as tags indicadas (sem tocar em raw_text/amount). Devolve a entry já
+// Update altera texto, início/fim de atividade e/ou remove tags específicas de
+// uma entry do usuário dono. text != nil reescreve raw_text, amount e as tags.
+// startedAt != nil regrava o início (deve ser RFC3339). endedAt != nil grava o
+// fim (string vazia limpa o campo; caso contrário deve ser RFC3339). removeTags
+// apaga só as tags indicadas (sem tocar em raw_text/amount). Devolve a entry já
 // atualizada.
-func (r *Repository) Update(userID, id int64, text, endedAt *string, removeTags []string) (*Entry, error) {
+func (r *Repository) Update(userID, id int64, text, startedAt, endedAt *string, removeTags []string) (*Entry, error) {
 	var owner int64
 	err := r.db.QueryRow("SELECT user_id FROM entries WHERE id = ?", id).Scan(&owner)
 	if err == sql.ErrNoRows || (err == nil && owner != userID) {
@@ -191,11 +193,29 @@ func (r *Repository) Update(userID, id int64, text, endedAt *string, removeTags 
 		}
 	}
 
+	if startedAt != nil {
+		if *startedAt == "" {
+			return nil, fmt.Errorf("invalid started_at")
+		}
+		if _, perr := time.Parse(time.RFC3339, *startedAt); perr != nil {
+			return nil, fmt.Errorf("invalid started_at")
+		}
+		if _, err := r.db.Exec(
+			"UPDATE entries SET started_at = ? WHERE id = ? AND user_id = ?",
+			*startedAt, id, userID,
+		); err != nil {
+			return nil, fmt.Errorf("failed to update started_at: %w", err)
+		}
+	}
+
 	if endedAt != nil {
 		var execErr error
 		if *endedAt == "" {
 			_, execErr = r.db.Exec("UPDATE entries SET ended_at = NULL WHERE id = ? AND user_id = ?", id, userID)
 		} else {
+			if _, perr := time.Parse(time.RFC3339, *endedAt); perr != nil {
+				return nil, fmt.Errorf("invalid ended_at")
+			}
 			_, execErr = r.db.Exec("UPDATE entries SET ended_at = ? WHERE id = ? AND user_id = ?", *endedAt, id, userID)
 		}
 		if execErr != nil {

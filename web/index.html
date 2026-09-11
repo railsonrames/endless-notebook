@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt-BR" data-theme="light">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -25,7 +25,7 @@
             --ink-faint: rgba(26, 26, 26, 0.35);
             --ink-committed: #202a3a;
             --time-ink: #3a3a3a;
-            --time-start: #3d4d1f;
+            --time-start: #14591d;
             --time-end: #7b2323;
             --gutter-top: #f2efe3;
             --gutter-bottom: #ece7d9;
@@ -47,7 +47,7 @@
             --ink-faint: rgba(216, 219, 226, 0.3);
             --ink-committed: #cfd6e6;
             --time-ink: #9aa1b0;
-            --time-start: #9fce5f;
+            --time-start: #4f9a52;
             --time-end: #e58a8a;
             --gutter-top: #272a34;
             --gutter-bottom: #1d1f27;
@@ -223,8 +223,22 @@
             border-bottom: 2px solid #444;
             font-size: 11px;
             color: #888;
-            text-align: center;
             letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .notebook-header .header-title {
+            flex: 1;
+            text-align: center;
+        }
+
+        .notebook-header .tag-button {
+            flex: 0 0 auto;
+            font-size: 9px;
+            margin: 0;
         }
 
         .status-strip {
@@ -386,8 +400,47 @@
             color: var(--time-start);
         }
 
+        /* "A entrada" (linha com início registrado) ganha um traço verde escuro.
+           A "saída" continua indicada só pela cor vermelha do horário. */
+        .notebook-row.start-set:not(.active):not(.editing) {
+            background: rgba(20, 89, 29, 0.07);
+            box-shadow: inset 4px 0 0 var(--time-start);
+        }
+
+        html[data-theme="dark"] .notebook-row.start-set:not(.active):not(.editing) {
+            background: rgba(79, 154, 82, 0.10);
+        }
+
         .notebook-row.end-set .row-time {
             color: var(--time-end);
+        }
+
+        /* Linha divisória de dia inserida no caderno quando a data muda. */
+        .notebook-row.day-divider {
+            justify-content: center;
+            align-items: center;
+            min-height: 30px;
+            padding: 5px 10px;
+            cursor: default;
+            background: linear-gradient(to bottom, rgba(53, 61, 92, 0.12), rgba(53, 61, 92, 0.04));
+            border-bottom: 2px solid var(--rule-line);
+        }
+
+        html[data-theme="dark"] .notebook-row.day-divider {
+            background: linear-gradient(to bottom, rgba(150, 165, 200, 0.12), rgba(150, 165, 200, 0.03));
+        }
+
+        .notebook-row.day-divider:hover {
+            background: linear-gradient(to bottom, rgba(53, 61, 92, 0.12), rgba(53, 61, 92, 0.04));
+        }
+
+        .day-divider-label {
+            font-size: 10px;
+            font-weight: bold;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: var(--time-ink);
+            opacity: 0.85;
         }
 
         .sidebar {
@@ -534,15 +587,44 @@
             border-bottom: 1px solid #556b2f;
         }
 
+        /* Lista de tags em grade de 2 colunas, em vez de uma tag por linha
+           (o .sidebar-content genérico empilha em coluna). */
+        #tagsList.sidebar-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+
+        #tagsList.sidebar-content .tag-button {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #tagsList .tag-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        #tagsList .tag-count {
+            flex-shrink: 0;
+            margin-left: 0;
+        }
+
         .tag-button {
             display: inline-block;
-            padding: 4px 8px;
+            padding: 3px 6px;
             background: linear-gradient(to bottom, #3a3a4a, #2a2a3a);
             border: 1px solid #556b2f;
             color: #90ee90;
             cursor: pointer;
             font-family: 'Courier New', monospace;
-            font-size: 10px;
+            font-size: 9px;
+            text-transform: uppercase;
             margin-bottom: 4px;
             margin-right: 4px;
             transition: all 0.15s;
@@ -561,6 +643,36 @@
             color: #ffff00;
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 0 8px rgba(255,255,0,0.3);
             text-shadow: 0 0 3px #ffff00;
+        }
+
+        .tag-button.danger {
+            color: #ff8f8f;
+            border-color: #7b2323;
+        }
+
+        .tag-button.danger:hover {
+            background: linear-gradient(to bottom, #6b2f2f, #4d1f1f);
+            border-color: #c05a5a;
+        }
+
+        /* Contador de ocorrências dentro do botão da tag. */
+        .tag-count {
+            display: inline-block;
+            margin-left: 6px;
+            min-width: 15px;
+            padding: 0 4px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.38);
+            color: #cfe8b0;
+            font-size: 9px;
+            line-height: 15px;
+            text-align: center;
+            vertical-align: baseline;
+        }
+
+        .tag-button.active .tag-count {
+            background: rgba(0, 0, 0, 0.4);
+            color: #ffff99;
         }
 
         .modal-overlay {
@@ -611,8 +723,47 @@
 
         .modal-actions {
             display: flex;
+            flex-wrap: wrap;
             gap: 8px;
             justify-content: flex-end;
+            align-items: center;
+        }
+
+        .modal-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 12px;
+        }
+
+        .modal-field label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--time-ink);
+            font-weight: bold;
+        }
+
+        .modal-field-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .modal-field input[type="datetime-local"] {
+            flex: 1;
+            min-width: 160px;
+            padding: 6px;
+            background-color: #f5f5dc;
+            color: #1a1a1a;
+            border: 2px inset #999;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .modal-spacer {
+            flex: 1;
         }
 
         /* Scrollbar retro */
@@ -636,61 +787,90 @@
     </style>
 </head>
 <body>
-    <button class="reopen-header-btn" id="reopenHeaderBtn" onclick="toggleHeader()" title="Mostrar menu" aria-label="Mostrar menu">&#9662; menu</button>
+    <button class="reopen-header-btn" id="reopenHeaderBtn" onclick="toggleHeader()" title="Show menu" aria-label="Show menu">&#9662; menu</button>
 
     <header>
         <h1>ENDLESS NOTEBOOK</h1>
         <div class="header-actions">
             <span id="whoami" class="whoami"></span>
-            <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Alternar tema claro/escuro" aria-label="Alternar tema">&#9790;</button>
-            <button class="icon-btn" id="toggleHeaderBtn" onclick="toggleHeader()" title="Retrair menu" aria-label="Retrair menu">&#9652;</button>
+            <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle light/dark theme" aria-label="Toggle theme">&#9790;</button>
+            <button class="icon-btn" id="toggleHeaderBtn" onclick="toggleHeader()" title="Collapse menu" aria-label="Collapse menu">&#9652;</button>
             <button class="logout-btn" onclick="logout()">Logout</button>
         </div>
     </header>
 
     <div class="container">
         <div class="notebook-section">
-            <div class="notebook-header">ENDLESS NOTEBOOK v1.0 - Personal Activity Log</div>
+            <div class="notebook-header">
+                <span class="header-title">ENDLESS NOTEBOOK v1.0 - Personal Activity Log</span>
+                <button class="tag-button" id="openOnlyToggleBtn" onclick="toggleOpenOnly()" title="Show only lines without an end time">Open only</button>
+            </div>
             <div id="statusStrip" class="status-strip">Status: ready</div>
-            <div id="notebookSheet" class="notebook-sheet" aria-label="Pauta do caderno"></div>
+            <div id="notebookSheet" class="notebook-sheet" aria-label="Notebook sheet"></div>
         </div>
 
         <div class="sidebar">
             <div class="filter-tags">
                 <div class="sidebar-head">
                     <h2>Tags</h2>
-                    <button class="tag-button" id="activeTagsToggleBtn" onclick="toggleActiveTagsFilter()" title="Mostrar só tags de itens ainda em aberto">Só ativas</button>
+                    <button class="tag-button" id="activeTagsToggleBtn" onclick="toggleActiveTagsFilter()" title="Show only tags of lines still open">Active only</button>
                 </div>
                 <div id="tagsList" class="sidebar-content">
-                    <!-- Tags serão inseridas aqui via JS -->
+                    <!-- Tags injected here via JS -->
                 </div>
             </div>
 
             <div class="sidebar-section">
                 <div class="sidebar-head">
                     <h2>Recent Entries</h2>
-                    <button class="collapse-btn" id="toggleSidebarBtn" onclick="toggleSidebar()" title="Ocultar entradas" aria-label="Ocultar entradas">&#187;</button>
+                    <button class="collapse-btn" id="toggleSidebarBtn" onclick="toggleSidebar()" title="Hide entries" aria-label="Hide entries">&#187;</button>
                 </div>
                 <div id="entriesList" class="sidebar-content">
-                    <!-- Entradas serão inseridas aqui via JS -->
+                    <!-- Entries injected here via JS -->
                 </div>
             </div>
         </div>
 
-        <button class="reopen-btn" id="reopenSidebarBtn" onclick="toggleSidebar()" title="Mostrar entradas" aria-label="Mostrar entradas">&#171;</button>
+        <button class="reopen-btn" id="reopenSidebarBtn" onclick="toggleSidebar()" title="Show entries" aria-label="Show entries">&#171;</button>
     </div>
 
     <div id="tagRemovalOverlay" class="modal-overlay" hidden>
         <div class="modal-box">
-            <h3>Concluído — remover alguma tag?</h3>
+            <h3>Done — remove any tags?</h3>
             <div id="tagRemovalList" class="modal-tag-list"></div>
             <div class="modal-actions">
-                <button class="tag-button" id="tagRemovalConfirmBtn">Remover selecionadas</button>
-                <button class="tag-button" id="tagRemovalKeepBtn">Manter todas</button>
+                <button class="tag-button" id="tagRemovalConfirmBtn">Remove selected</button>
+                <button class="tag-button" id="tagRemovalKeepBtn">Keep all</button>
             </div>
         </div>
     </div>
 
-    <script src="/static/notebook.js?v=6"></script>
+    <div id="timeEditOverlay" class="modal-overlay" hidden>
+        <div class="modal-box">
+            <h3>Edit line</h3>
+            <div class="modal-field">
+                <label for="timeEditStart">Start</label>
+                <div class="modal-field-row">
+                    <input type="datetime-local" id="timeEditStart">
+                </div>
+            </div>
+            <div class="modal-field">
+                <label for="timeEditEnd">End</label>
+                <div class="modal-field-row">
+                    <input type="datetime-local" id="timeEditEnd">
+                    <button class="tag-button" id="timeEditEndNow" type="button">Now</button>
+                    <button class="tag-button" id="timeEditEndClear" type="button">Clear</button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="tag-button danger" id="timeEditDeleteBtn" type="button">Delete line</button>
+                <span class="modal-spacer"></span>
+                <button class="tag-button" id="timeEditSaveBtn" type="button">Save</button>
+                <button class="tag-button" id="timeEditCancelBtn" type="button">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/notebook.js?v=7"></script>
 </body>
 </html>
