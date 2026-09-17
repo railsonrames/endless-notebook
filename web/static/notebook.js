@@ -12,14 +12,19 @@ let allEntries = [];
 let showOpenOnly = false;
 // Linha do caderno atualmente aberta no modal de edição de horário.
 let timeModalRow = null;
+// Estado do painel de calendário (sempre começa retraído).
+let calendarOpen = false;
+let calendarViewYear = new Date().getFullYear();
+let calendarViewMonth = new Date().getMonth();
 
 // Caderno "endless": começa com um bloco de linhas e cria mais
 // dinamicamente conforme o final se aproxima.
 const INITIAL_ROWS = 25;
 const TRAILING_ROWS = 12;
 
-// Intervalo do polling de sincronização entre dispositivos/sessões (ms).
-const LIVE_SYNC_INTERVAL_MS = 20000;
+// Intervalo do polling de sincronização (ms) — rede de segurança; o caminho
+// rápido é o SSE em connectEvents().
+const LIVE_SYNC_INTERVAL_MS = 45000;
 
 // Carrega entries ao abrir a página
 document.addEventListener('DOMContentLoaded', () => {
@@ -29,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
     restoreActiveTagsFilterState();
     restoreOpenOnlyState();
     setupTimeEditModal();
+    setupCalendar();
     loadCurrentUser();
     buildNotebookSheet();
     loadEntries();
@@ -320,14 +326,19 @@ function createRow(sheet, index) {
     });
 
     // Clicar na hora:
-    //  - linha já salva no servidor -> abre o modal (editar início/fim, apagar);
-    //  - linha nova sem início -> começa a atividade;
-    //  - linha nova já iniciada -> encerra.
+    //  - linha já com início E fim -> abre o modal (editar horários, apagar);
+    //  - linha salva só com início (sem fim) -> um clique já encerra, direto;
+    //  - linha nova/sem texto ainda -> começa a atividade (ou encerra se já
+    //    tinha começado), sem persistir id nenhum.
     time.addEventListener('click', (event) => {
         event.stopPropagation();
         if (row.dataset.editing) return;
         if (row.dataset.entryId) {
-            openTimeEditModal(row);
+            if (row.dataset.start && row.dataset.end) {
+                openTimeEditModal(row);
+            } else {
+                endActivity(true);
+            }
         } else if (row.dataset.start) {
             endActivity(true);
         } else {
@@ -577,6 +588,7 @@ async function loadEntries(tag = null) {
         const entries = await response.json();
         if (!tag) {
             allEntries = entries;
+            if (calendarOpen) renderCalendar();
         }
         renderEntries(entries);
         extractTags(entries);
@@ -723,6 +735,7 @@ async function reloadAll(opts) {
     await loadEntries(tag);
     if (tag) {
         await loadAllEntries();
+        if (calendarOpen) renderCalendar();
     }
     renderSheet(allEntries, { focusEmpty });
 }
@@ -730,12 +743,13 @@ async function reloadAll(opts) {
 // ============================================
 // SINCRONIZAÇÃO ENTRE SESSÕES/DISPOSITIVOS
 // ============================================
-// Não há push do servidor (sem WebSocket/SSE): cada sessão só sabe o que
-// escreveu localmente. Para uma entry criada noutro dispositivo aparecer aqui,
-// esta aba precisa recarregar — o que fazemos (a) sempre que a aba volta a
-// ficar visível/em foco (o caso comum: trocar de app e voltar) e (b) por
-// polling de baixa frequência como rede de segurança enquanto fica aberta.
+// O servidor empurra um evento via Server-Sent Events (GET /api/events)
+// sempre que uma entry deste usuário muda em qualquer sessão — é o caminho
+// rápido (~1s). Como reforço, também recarregamos (a) sempre que a aba volta
+// a ficar visível/em foco e (b) por polling de baixa frequência, caso o SSE
+// caia e o navegador demore a reconectar.
 let liveSyncInFlight = false;
+let eventSource = null;
 
 // Evita atropelar o usuário: só sincroniza se não houver texto não salvo numa
 // linha nova, nem uma edição inline em andamento, nem um modal aberto.
@@ -773,6 +787,19 @@ function startLiveSync() {
         if (document.visibilityState === 'visible') liveSync();
     });
     window.addEventListener('focus', liveSync);
+    connectEvents();
+}
+
+// Abre a conexão SSE com o servidor. EventSource reconecta sozinho em caso de
+// queda de rede; se a sessão expirou (401), o servidor fecha sem 200 e o
+// browser não tenta de novo — o próximo liveSync (foco/polling) vai bater
+// no fetch normal, que já redireciona para /login.
+function connectEvents() {
+    if (eventSource || typeof EventSource === 'undefined') return;
+    eventSource = new EventSource('/api/events');
+    eventSource.addEventListener('changed', () => {
+        liveSync();
+    });
 }
 
 // Busca a lista completa de entradas (sem filtro de tag) e guarda em allEntries.
@@ -1060,12 +1087,12 @@ function openTagRemovalModal(entryId, tags) {
     });
 
     const confirmBtn = document.getElementById('tagRemovalConfirmBtn');
+    const removeAllBtn = document.getElementById('tagRemovalRemoveAllBtn');
     const keepBtn = document.getElementById('tagRemovalKeepBtn');
 
     const close = () => { overlay.hidden = true; };
 
-    confirmBtn.onclick = async () => {
-        const selected = [...list.querySelectorAll('input:checked')].map(cb => cb.value);
+    const removeTags = async (selected) => {
         close();
         if (selected.length === 0) return;
         const updated = await updateEntry(entryId, { remove_tags: selected });
@@ -1074,6 +1101,18 @@ function openTagRemovalModal(entryId, tags) {
         } else {
             setStatus('Status: failed to remove tags');
         }
+    };
+
+    // "Remove all" só marca todas as caixas e deixa o mesmo fluxo do
+    // "Remove selected" cuidar do resto.
+    removeAllBtn.onclick = () => {
+        list.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.checked = true; });
+        confirmBtn.click();
+    };
+
+    confirmBtn.onclick = async () => {
+        const selected = [...list.querySelectorAll('input:checked')].map(cb => cb.value);
+        await removeTags(selected);
     };
     keepBtn.onclick = close;
 
@@ -1240,5 +1279,243 @@ function redrawCanvas() {
 function logout() {
     // o servidor apaga a sessão do banco e limpa o cookie
     window.location.href = '/logout';
+}
+
+// ============================================
+// CALENDÁRIO
+// ============================================
+// Painel retraído (só o emoji no header) que marca, no mês visível, os dias
+// citados no texto das linhas (dd/mm/yyyy ou yyyy-mm-dd). Tudo client-side:
+// não há campo novo no banco, é uma leitura de raw_text já carregado.
+
+const CALENDAR_HEX_RE = /^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/;
+// dd/mm/yyyy (dia primeiro) e yyyy-mm-dd (ISO), soltos em qualquer lugar do texto.
+const CALENDAR_DATE_SLASH_RE = /\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g;
+const CALENDAR_DATE_ISO_RE = /\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g;
+
+// Confere se o browser reconhece `name` como cor CSS válida (nome ou hex).
+function isValidCssColor(name) {
+    const probe = new Option().style;
+    probe.color = '';
+    probe.color = name;
+    return probe.color !== '';
+}
+
+// Tag -> cor CSS, se a tag for um nome de cor reconhecido ou um hex de 3/6
+// dígitos (ex: #red, #27F5B4 viram tags "red"/"27F5B4"). Senão, null.
+function colorFromTag(tag) {
+    if (CALENDAR_HEX_RE.test(tag)) return `#${tag}`;
+    if (/^[a-zA-Z]+$/.test(tag) && isValidCssColor(tag)) return tag.toLowerCase();
+    return null;
+}
+
+// Chave estável de dia (independe de zero à esquerda).
+function calendarDayKey(year, month, day) {
+    return `${year}-${month}-${day}`;
+}
+
+// true se year/month(1-12)/day formarem uma data real (rejeita 31/02 etc.).
+function isRealCalendarDate(year, month, day) {
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    const d = new Date(year, month - 1, day);
+    return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
+}
+
+// Extrai as datas citadas em `text`, já validadas, como calendarDayKey().
+function datesInText(text) {
+    const keys = [];
+    if (!text) return keys;
+
+    let m;
+    CALENDAR_DATE_SLASH_RE.lastIndex = 0;
+    while ((m = CALENDAR_DATE_SLASH_RE.exec(text))) {
+        const day = Number(m[1]), month = Number(m[2]), year = Number(m[3]);
+        if (isRealCalendarDate(year, month, day)) keys.push(calendarDayKey(year, month - 1, day));
+    }
+    CALENDAR_DATE_ISO_RE.lastIndex = 0;
+    while ((m = CALENDAR_DATE_ISO_RE.exec(text))) {
+        const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
+        if (isRealCalendarDate(year, month, day)) keys.push(calendarDayKey(year, month - 1, day));
+    }
+    return keys;
+}
+
+// Varre allEntries e monta dayKey -> { color, texts }. Se mais de uma entry
+// citar a mesma data com cores diferentes, a primeira encontrada vale — não
+// há uma regra "certa" para empate, só precisa ser previsível.
+function buildCalendarMarks() {
+    const marks = new Map();
+    (allEntries || []).forEach((entry) => {
+        const keys = datesInText(entry.raw_text);
+        if (keys.length === 0) return;
+
+        let color = null;
+        for (const tag of entry.tags || []) {
+            color = colorFromTag(tag);
+            if (color) break;
+        }
+
+        keys.forEach((key) => {
+            let mark = marks.get(key);
+            if (!mark) {
+                mark = { color: null, texts: [] };
+                marks.set(key, mark);
+            }
+            if (color && !mark.color) mark.color = color;
+            mark.texts.push(entry.raw_text);
+        });
+    });
+    return marks;
+}
+
+// Preto ou branco, o que for mais legível sobre `bgColor` (nome CSS ou hex).
+function readableTextColor(bgColor) {
+    const probe = document.createElement('div');
+    probe.style.color = bgColor;
+    document.body.appendChild(probe);
+    const rgb = getComputedStyle(probe).color;
+    document.body.removeChild(probe);
+    const parts = rgb.match(/\d+/g);
+    if (!parts) return '#111111';
+    const [r, g, b] = parts.map(Number);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.6 ? '#111111' : '#ffffff';
+}
+
+function setupCalendar() {
+    const toggleBtn = document.getElementById('calendarToggleBtn');
+    const panel = document.getElementById('calendarPanel');
+    const prevBtn = document.getElementById('calendarPrevBtn');
+    const nextBtn = document.getElementById('calendarNextBtn');
+    if (!toggleBtn || !panel || !prevBtn || !nextBtn) return;
+
+    toggleBtn.onclick = (event) => {
+        event.stopPropagation();
+        toggleCalendar();
+    };
+    prevBtn.onclick = () => {
+        calendarViewMonth -= 1;
+        if (calendarViewMonth < 0) { calendarViewMonth = 11; calendarViewYear -= 1; }
+        renderCalendar();
+    };
+    nextBtn.onclick = () => {
+        calendarViewMonth += 1;
+        if (calendarViewMonth > 11) { calendarViewMonth = 0; calendarViewYear += 1; }
+        renderCalendar();
+    };
+
+    // Clique dentro do painel não deve fechá-lo; clique fora, sim.
+    panel.addEventListener('click', (event) => event.stopPropagation());
+    document.addEventListener('click', () => {
+        if (calendarOpen) toggleCalendar();
+    });
+}
+
+function toggleCalendar() {
+    calendarOpen = !calendarOpen;
+    const panel = document.getElementById('calendarPanel');
+    if (panel) panel.hidden = !calendarOpen;
+    if (calendarOpen) renderCalendar();
+}
+
+// Substitui o ano exibido por um <input type=number>; Enter confirma, Esc ou
+// blur também fecham (blur confirma o que estiver digitado).
+function editCalendarYear() {
+    const monthYearEl = document.getElementById('calendarMonthYear');
+    const yearEl = monthYearEl.querySelector('.calendar-year');
+    if (!yearEl) return;
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'calendar-year-input';
+    input.value = String(calendarViewYear);
+
+    const commit = () => {
+        const value = parseInt(input.value, 10);
+        if (!Number.isNaN(value) && value > 0) calendarViewYear = value;
+        renderCalendar();
+    };
+    input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); commit(); }
+        if (event.key === 'Escape') { event.preventDefault(); renderCalendar(); }
+    });
+    input.addEventListener('blur', commit);
+    input.addEventListener('click', (event) => event.stopPropagation());
+
+    yearEl.replaceWith(input);
+    input.focus();
+    input.select();
+}
+
+function renderCalendar() {
+    const grid = document.getElementById('calendarGrid');
+    const monthYearEl = document.getElementById('calendarMonthYear');
+    if (!grid || !monthYearEl) return;
+
+    const year = calendarViewYear;
+    const month = calendarViewMonth;
+    const marks = buildCalendarMarks();
+
+    monthYearEl.innerHTML = '';
+    const monthLabel = document.createElement('span');
+    monthLabel.textContent = new Date(year, month, 1).toLocaleDateString('en-US', { month: 'long' }) + ' ';
+    const yearLabel = document.createElement('span');
+    yearLabel.className = 'calendar-year';
+    yearLabel.textContent = String(year);
+    yearLabel.title = 'Click to change year';
+    yearLabel.onclick = (event) => { event.stopPropagation(); editCalendarYear(); };
+    monthYearEl.appendChild(monthLabel);
+    monthYearEl.appendChild(yearLabel);
+
+    grid.innerHTML = '';
+
+    const startWeekday = new Date(year, month, 1).getDay(); // 0 = domingo
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const daysInPrevMonth = new Date(year, month, 0).getDate();
+    const today = new Date();
+
+    const TOTAL_CELLS = 42; // 6 semanas fixas, grade sempre do mesmo tamanho
+    for (let i = 0; i < TOTAL_CELLS; i++) {
+        let cellMonth = month;
+        let cellYear = year;
+        let cellDay;
+        let outside = false;
+
+        if (i < startWeekday) {
+            cellDay = daysInPrevMonth - startWeekday + 1 + i;
+            cellMonth = month - 1;
+            outside = true;
+        } else if (i >= startWeekday + daysInMonth) {
+            cellDay = i - (startWeekday + daysInMonth) + 1;
+            cellMonth = month + 1;
+            outside = true;
+        } else {
+            cellDay = i - startWeekday + 1;
+        }
+        if (cellMonth < 0) { cellMonth = 11; cellYear -= 1; }
+        if (cellMonth > 11) { cellMonth = 0; cellYear += 1; }
+
+        const cell = document.createElement('div');
+        cell.className = 'calendar-day' + (outside ? ' outside' : '');
+        cell.textContent = String(cellDay);
+
+        if (cellYear === today.getFullYear() && cellMonth === today.getMonth() && cellDay === today.getDate()) {
+            cell.classList.add('today');
+        }
+
+        const mark = marks.get(calendarDayKey(cellYear, cellMonth, cellDay));
+        if (mark) {
+            cell.classList.add('marked');
+            if (mark.color) {
+                cell.style.backgroundColor = mark.color;
+                cell.style.color = readableTextColor(mark.color);
+            } else {
+                cell.classList.add('marked-default');
+            }
+            cell.title = mark.texts.slice(0, 5).join('\n');
+        }
+
+        grid.appendChild(cell);
+    }
 }
 

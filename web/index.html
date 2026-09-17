@@ -766,6 +766,109 @@
             flex: 1;
         }
 
+        /* Painel de calendário: retraído por padrão (só o emoji no header),
+           abre como um popover ancorado no topo direito, ~30% da largura. */
+        .calendar-panel {
+            position: fixed;
+            top: 58px;
+            right: 12px;
+            width: 30vw;
+            min-width: 240px;
+            max-width: 340px;
+            max-height: 75vh;
+            overflow-y: auto;
+            z-index: 45;
+            background: linear-gradient(180deg, var(--paper-top) 0%, var(--paper-bottom) 100%);
+            border: 3px solid #555;
+            box-shadow: 5px 5px 15px rgba(0,0,0,0.7);
+            padding: 10px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .calendar-panel[hidden] {
+            display: none;
+        }
+
+        .calendar-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .calendar-nav .icon-btn {
+            width: 24px;
+            height: 24px;
+            font-size: 13px;
+        }
+
+        .calendar-month-year {
+            font-size: 11px;
+            font-weight: bold;
+            color: var(--ink);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .calendar-year {
+            cursor: pointer;
+            border-bottom: 1px dashed var(--ink-faint);
+        }
+
+        .calendar-year:hover {
+            color: var(--time-end);
+        }
+
+        .calendar-year-input {
+            width: 60px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            padding: 1px 3px;
+            background-color: #f5f5dc;
+            color: #1a1a1a;
+            border: 2px inset #999;
+        }
+
+        .calendar-weekdays,
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 3px;
+        }
+
+        .calendar-weekdays {
+            margin-bottom: 4px;
+            font-size: 9px;
+            color: var(--time-ink);
+            text-align: center;
+        }
+
+        .calendar-day {
+            aspect-ratio: 1 / 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            background: var(--paper-top);
+            color: var(--ink);
+            border: 1px solid var(--rule-line);
+            cursor: default;
+        }
+
+        .calendar-day.outside {
+            opacity: 0.35;
+        }
+
+        .calendar-day.today {
+            box-shadow: inset 0 0 0 2px #8b9d3b;
+        }
+
+        /* Dia citado numa linha, sem tag de cor: inverte (fundo escuro, número claro). */
+        .calendar-day.marked-default {
+            background: var(--ink-committed);
+            color: var(--paper-top);
+        }
+
         /* Scrollbar retro */
         .sidebar::-webkit-scrollbar {
             width: 12px;
@@ -793,11 +896,24 @@
         <h1>ENDLESS NOTEBOOK</h1>
         <div class="header-actions">
             <span id="whoami" class="whoami"></span>
+            <button class="icon-btn" id="calendarToggleBtn" title="Calendar" aria-label="Calendar">&#128197;</button>
             <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle light/dark theme" aria-label="Toggle theme">&#9790;</button>
             <button class="icon-btn" id="toggleHeaderBtn" onclick="toggleHeader()" title="Collapse menu" aria-label="Collapse menu">&#9652;</button>
             <button class="logout-btn" onclick="logout()">Logout</button>
         </div>
     </header>
+
+    <div id="calendarPanel" class="calendar-panel" hidden>
+        <div class="calendar-nav">
+            <button class="icon-btn" id="calendarPrevBtn" type="button" title="Previous month" aria-label="Previous month">&#8249;</button>
+            <span id="calendarMonthYear" class="calendar-month-year"></span>
+            <button class="icon-btn" id="calendarNextBtn" type="button" title="Next month" aria-label="Next month">&#8250;</button>
+        </div>
+        <div class="calendar-weekdays">
+            <span>SU</span><span>MO</span><span>TU</span><span>WE</span><span>TH</span><span>FR</span><span>SA</span>
+        </div>
+        <div id="calendarGrid" class="calendar-grid"></div>
+    </div>
 
     <div class="container">
         <div class="notebook-section">
@@ -840,6 +956,7 @@
             <div id="tagRemovalList" class="modal-tag-list"></div>
             <div class="modal-actions">
                 <button class="tag-button" id="tagRemovalConfirmBtn">Remove selected</button>
+                <button class="tag-button danger" id="tagRemovalRemoveAllBtn">Remove all</button>
                 <button class="tag-button" id="tagRemovalKeepBtn">Keep all</button>
             </div>
         </div>
@@ -871,6 +988,6 @@
         </div>
     </div>
 
-    <script src="/static/notebook.js?v=7"></script>
+    <script src="/static/notebook.js?v=8"></script>
 </body>
 </html>

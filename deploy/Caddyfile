@@ -8,7 +8,10 @@
 }
 
 APP_DOMAIN {
-	encode zstd gzip
+	# /api/events é Server-Sent Events (streaming): fica de fora da compressão,
+	# senão o compressor bufferiza os eventos pequenos e atrasa a entrega.
+	@notSSE not path /api/events
+	encode @notSSE zstd gzip
 	reverse_proxy 127.0.0.1:8080
 
 	header {

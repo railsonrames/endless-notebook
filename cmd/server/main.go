@@ -73,6 +73,7 @@ func main() {
 
 	// rotas protegidas
 	http.Handle("/api/me", authMgr.Middleware(http.HandlerFunc(srv.Me)))
+	http.Handle("/api/events", authMgr.Middleware(http.HandlerFunc(srv.Events)))
 
 	http.Handle("/api/entries", authMgr.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {

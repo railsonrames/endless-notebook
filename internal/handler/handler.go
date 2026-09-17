@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rames/endless-notebook/internal/auth"
 	"github.com/rames/endless-notebook/internal/entry"
+	"github.com/rames/endless-notebook/internal/events"
 )
 
 // Server agrupa handlers HTTP
@@ -18,6 +20,7 @@ type Server struct {
 	db        *sql.DB
 	auth      *auth.Manager
 	entryRepo *entry.Repository
+	hub       *events.Hub
 }
 
 // New cria um novo servidor HTTP
@@ -26,6 +29,7 @@ func New(db *sql.DB, authMgr *auth.Manager) *Server {
 		db:        db,
 		auth:      authMgr,
 		entryRepo: entry.NewRepository(db),
+		hub:       events.NewHub(),
 	}
 }
 
@@ -118,6 +122,8 @@ func (s *Server) CreateEntry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to save entry", http.StatusInternalServerError)
 		return
 	}
+
+	s.hub.Notify(userID)
 
 	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
@@ -238,6 +244,8 @@ func (s *Server) UpdateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.hub.Notify(userID)
+
 	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(toResponse(e))
@@ -263,9 +271,62 @@ func (s *Server) DeleteEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.hub.Notify(userID)
+
 	noStore(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Events handler GET /api/events — Server-Sent Events. Mantém a conexão
+// aberta e empurra um evento "changed" sempre que uma entry deste usuário for
+// criada/alterada/apagada em qualquer sessão (outra aba, outro dispositivo).
+// O cliente reage recarregando a lista; não manda o payload da mudança, só o
+// aviso — o banco continua sendo a única fonte de verdade.
+func (s *Server) Events(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	userID := auth.UserID(r.Context())
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ch := s.hub.Subscribe(userID)
+	defer s.hub.Unsubscribe(userID, ch)
+
+	// Ping periódico: mantém a conexão viva através de proxies/timeouts
+	// intermediários e dá ao browser um jeito de notar uma conexão morta.
+	ping := time.NewTicker(25 * time.Second)
+	defer ping.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ch:
+			if _, err := fmt.Fprintf(w, "event: changed\ndata: %d\n\n", time.Now().UnixMilli()); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-ping.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 // HealthHandler retorna status de saúde
