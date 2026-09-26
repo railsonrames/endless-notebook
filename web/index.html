@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Endless Notebook</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <style>
         * {
             margin: 0;
@@ -181,6 +182,15 @@
             line-height: 1;
             transition: all 0.1s;
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+        }
+
+        /* Alinhado dinamicamente (JS) com a borda direita da caixa do caderno,
+           sem sair do fluxo do header-actions nem empurrar os botões vizinhos. */
+        #calendarToggleBtn {
+            position: relative;
+            /* Nunca anima o alinhamento em si (calculado via JS) — só o
+               feedback visual de hover/active que .icon-btn já usa. */
+            transition: background 0.1s, box-shadow 0.1s, text-shadow 0.1s;
         }
 
         .icon-btn:active {
@@ -766,6 +776,50 @@
             flex: 1;
         }
 
+        /* Modal de ajuda (EN/ES) */
+        .help-box {
+            width: 460px;
+            max-width: 92vw;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .help-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .help-head h3 {
+            margin-bottom: 0;
+        }
+
+        .help-lang-switch {
+            display: flex;
+            gap: 4px;
+            flex: 0 0 auto;
+        }
+
+        .help-body p {
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--ink);
+            margin-bottom: 10px;
+        }
+
+        .help-body p:last-child {
+            margin-bottom: 0;
+        }
+
+        .help-body code {
+            font-family: 'Courier New', monospace;
+            background: rgba(53, 61, 92, 0.1);
+            padding: 1px 4px;
+            border-radius: 2px;
+        }
+
         /* Painel de calendário: retraído por padrão (só o emoji no header),
            abre como um popover ancorado no topo direito, ~30% da largura. */
         .calendar-panel {
@@ -897,6 +951,7 @@
         <div class="header-actions">
             <span id="whoami" class="whoami"></span>
             <button class="icon-btn" id="calendarToggleBtn" title="Calendar" aria-label="Calendar">&#128197;</button>
+            <button class="icon-btn" id="helpToggleBtn" title="Help" aria-label="Help">&#10067;</button>
             <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle light/dark theme" aria-label="Toggle theme">&#9790;</button>
             <button class="icon-btn" id="toggleHeaderBtn" onclick="toggleHeader()" title="Collapse menu" aria-label="Collapse menu">&#9652;</button>
             <button class="logout-btn" onclick="logout()">Logout</button>
@@ -988,6 +1043,43 @@
         </div>
     </div>
 
-    <script src="/static/notebook.js?v=8"></script>
+    <div id="helpOverlay" class="modal-overlay" hidden>
+        <div class="modal-box help-box">
+            <div class="help-head">
+                <h3>How to use Endless Notebook</h3>
+                <div class="help-lang-switch">
+                    <button class="tag-button active" id="helpLangEnBtn" type="button">EN</button>
+                    <button class="tag-button" id="helpLangEsBtn" type="button">ES</button>
+                </div>
+            </div>
+
+            <div id="helpBodyEn" class="help-body">
+                <p><strong>Notebook.</strong> Click any line to start writing. The moment you click/focus it is recorded as its start time. Press Enter to save the line and move to the next one.</p>
+                <p><strong>Tags.</strong> Write <code>#tagname</code> anywhere in the text to tag a line. Tags show up in the sidebar with a count next to them; click one to filter entries by that tag.</p>
+                <p><strong>Finishing a line.</strong> Click the time on the left of a saved line to mark it finished (one click). Once a line has both a start and an end, clicking the time again opens a modal where you can change the start/end time or delete the line.</p>
+                <p><strong>Editing an old line.</strong> Click its card in the sidebar (Recent Entries, or a tag's filtered list) to jump straight to it in the notebook and edit the text there.</p>
+                <p><strong>Calendar.</strong> Click the &#128197; icon to open it (it stays tucked away otherwise). Use &#8249;/&#8250; to change month, and click the year to type a different one.</p>
+                <p><strong>Marking dates.</strong> Write a date in a line as <code>dd/mm/yyyy</code> or <code>yyyy-mm-dd</code> and that day lights up on the calendar. Add a color tag on the same line — a color name like <code>#red</code>, <code>#blue</code>, <code>#green</code>, or a hex code like <code>#F54927</code> — to color that day instead of the default highlight. Color tags don't show up as regular tags/filters, they're just for the calendar.</p>
+                <p><strong>Date ranges.</strong> Write two dates separated by <code>~</code> to color every day in between, e.g.: <code>vacation 05/10/2026 ~ 10/10/2026 #green</code> marks every day from Oct 5th to 10th in green, all pointing back to that same line.</p>
+            </div>
+
+            <div id="helpBodyEs" class="help-body" hidden>
+                <p><strong>Cuaderno.</strong> Haz clic en cualquier línea para empezar a escribir. El momento en que la enfocas queda registrado como su hora de inicio. Presiona Enter para guardar la línea y pasar a la siguiente.</p>
+                <p><strong>Etiquetas.</strong> Escribe <code>#etiqueta</code> en cualquier parte del texto para etiquetar una línea. Las etiquetas aparecen en la barra lateral con un contador al lado; haz clic en una para filtrar las entradas por esa etiqueta.</p>
+                <p><strong>Terminar una línea.</strong> Haz clic en la hora a la izquierda de una línea guardada para marcarla como terminada (un solo clic). Cuando la línea ya tiene inicio y fin, hacer clic de nuevo en la hora abre un modal donde puedes cambiar la hora de inicio/fin o eliminar la línea.</p>
+                <p><strong>Editar una línea antigua.</strong> Haz clic en su tarjeta en la barra lateral (Entradas recientes, o la lista filtrada de una etiqueta) para ir directo a ella en el cuaderno y editar el texto ahí.</p>
+                <p><strong>Calendario.</strong> Haz clic en el ícono &#128197; para abrirlo (por defecto queda oculto). Usa &#8249;/&#8250; para cambiar de mes, y haz clic en el año para escribir uno diferente.</p>
+                <p><strong>Marcar fechas.</strong> Escribe una fecha en una línea como <code>dd/mm/aaaa</code> o <code>aaaa-mm-dd</code> y ese día se resalta en el calendario. Agrega una etiqueta de color en la misma línea — un nombre de color como <code>#red</code>, <code>#blue</code>, <code>#green</code>, o un código hexadecimal como <code>#F54927</code> — para colorear ese día en vez del resaltado por defecto. Las etiquetas de color no aparecen como etiquetas normales ni sirven para filtrar, son solo para el calendario.</p>
+                <p><strong>Rangos de fechas.</strong> Escribe dos fechas separadas por <code>~</code> para colorear todos los días entre medio, por ejemplo: <code>vacaciones 05/10/2026 ~ 10/10/2026 #green</code> marca en verde cada día del 5 al 10 de octubre, todos apuntando a esa misma línea.</p>
+            </div>
+
+            <div class="modal-actions">
+                <span class="modal-spacer"></span>
+                <button class="tag-button" id="helpCloseBtn" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/notebook.js?v=11"></script>
 </body>
 </html>

@@ -35,11 +35,57 @@ document.addEventListener('DOMContentLoaded', () => {
     restoreOpenOnlyState();
     setupTimeEditModal();
     setupCalendar();
+    setupHelpModal();
     loadCurrentUser();
     buildNotebookSheet();
     loadEntries();
     startLiveSync();
+    alignCalendarButton();
+
+    let alignResizeTimer = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(alignResizeTimer);
+        alignResizeTimer = setTimeout(alignCalendarButton, 120);
+    });
 });
+
+// Mantém o botão do calendário (dentro de .header-actions, sem sair de lá)
+// alinhado com a borda direita da caixa maior do caderno (.notebook-section),
+// em vez de ficar colado no canto do header junto dos outros ícones. Um
+// position:relative + right desloca só esse botão, sem empurrar os vizinhos.
+function alignCalendarButton() {
+    const btn = document.getElementById('calendarToggleBtn');
+    const section = document.querySelector('.notebook-section');
+    const header = document.querySelector('header');
+    const panel = document.getElementById('calendarPanel');
+    if (!btn || !section) return;
+
+    // Reconstrói a posição "natural" (sem o deslocamento já aplicado) SEM
+    // zerar o style antes de medir: zerar e reescrever é uma segunda escrita
+    // de `right`, e como o botão tem transition, isso pintava um pulo visível
+    // (volta pra posição natural, depois volta pra posição alinhada) a cada
+    // clique/resize. Uma escrita só = sem animação de ida e volta.
+    const currentOffset = parseFloat(btn.style.right) || 0;
+    const btnRect = btn.getBoundingClientRect();
+    const naturalRight = btnRect.right + currentOffset;
+    const sectionRect = section.getBoundingClientRect();
+
+    // Desloca só este botão (sem empurrar os vizinhos) até sua borda direita
+    // encostar exatamente na borda direita da caixa do caderno — a mesma
+    // linha reta que separa o caderno da sidebar.
+    const offset = Math.round(naturalRight - sectionRect.right);
+    btn.style.right = `${offset}px`;
+
+    // O painel do calendário abre "para a esquerda do botão": sua borda
+    // direita fica na mesma linha vertical (distância até a borda direita da
+    // viewport = distância da caixa do caderno até essa borda).
+    if (panel) {
+        panel.style.right = `${Math.round(window.innerWidth - sectionRect.right)}px`;
+        if (header) {
+            panel.style.top = `${Math.round(header.getBoundingClientRect().bottom + 6)}px`;
+        }
+    }
+}
 
 // Mostra o usuário logado no cabeçalho.
 async function loadCurrentUser() {
@@ -72,6 +118,7 @@ function restoreHeaderState() {
 
 function applyHeaderState(collapsed) {
     document.body.classList.toggle('header-collapsed', collapsed);
+    if (!collapsed) alignCalendarButton();
 }
 
 function toggleHeader() {
@@ -130,6 +177,7 @@ function applySidebarState(hidden) {
     if (container) {
         container.classList.toggle('sidebar-hidden', hidden);
     }
+    alignCalendarButton();
 }
 
 function toggleSidebar() {
@@ -927,7 +975,7 @@ function renderEntries(entries) {
         const rangeDiv = document.createElement('div');
         rangeDiv.className = 'activity-range';
         const endDate = parseServerDate(entry.ended_at);
-        rangeDiv.textContent = endDate ? `End: ${formatDateTime(endDate)}` : 'End: click to set';
+        rangeDiv.textContent = endDate ? `End: ${formatDateTime(endDate)}` : 'Not finished yet';
 
         item.appendChild(timeDiv);
         item.appendChild(textDiv);
@@ -940,28 +988,11 @@ function renderEntries(entries) {
             item.appendChild(amountDiv);
         }
 
-        item.addEventListener('click', async () => {
-            const endTime = new Date();
-            const updated = await updateEntry(entry.id, { ended_at: endTime.toISOString() });
-            if (!updated) {
-                setStatus('Status: failed to save activity end');
-                return;
-            }
-
-            rangeDiv.textContent = `End: ${formatDateTime(endTime)}`;
-            setStatus(`Status: activity ended at ${formatTimeOnly(endTime)}`);
-
-            // Reflete o fim na linha correspondente da folha, se estiver montada.
-            const sheetRow = sheetRows.find((r) => r.dataset.entryId === String(entry.id));
-            if (sheetRow) {
-                sheetRow.dataset.end = endTime.toISOString();
-                sheetRow.dataset.endLabel = formatTimeOnly(endTime);
-                sheetRow.classList.add('end-set');
-                if (sheetRow._renderTimeLabel) sheetRow._renderTimeLabel();
-            }
-
-            maybeShowTagRemovalModal(entry.id, entry.tags);
-            reloadAll();
+        // Finishing a line only happens by clicking its time in the notebook
+        // now — a card here just jumps you to that line to edit it.
+        item.title = 'Click to edit this line in the notebook';
+        item.addEventListener('click', () => {
+            jumpToEntry(entry.id);
         });
 
         list.appendChild(item);
@@ -987,6 +1018,31 @@ function renderEntries(entries) {
     }
 }
 
+// Leva o usuário até a linha no caderno (desligando "Open only" se for
+// preciso, já que uma entry concluída pode estar escondida por esse filtro)
+// e entra no modo de edição inline dela.
+function jumpToEntry(entryId) {
+    const sheet = document.getElementById('notebookSheet');
+    let row = sheetRows.find((r) => r.dataset.entryId === String(entryId));
+
+    if (!row && showOpenOnly) {
+        showOpenOnly = false;
+        const btn = document.getElementById('openOnlyToggleBtn');
+        if (btn) btn.classList.remove('active');
+        try { localStorage.setItem('showOpenOnly', '0'); } catch (e) { /* ignore */ }
+        renderSheet(allEntries, { focusEmpty: false });
+        row = sheetRows.find((r) => r.dataset.entryId === String(entryId));
+    }
+
+    if (!row) {
+        setStatus('Status: could not find that line in the notebook');
+        return;
+    }
+
+    revealRowIfNeeded(sheet, row);
+    if (row.dataset.saved) enterEditMode(row);
+}
+
 function extractTags(entries) {
     lastEntries = entries;
     const tags = new Set();
@@ -1002,6 +1058,9 @@ function extractTags(entries) {
         if (!entry.tags || entry.tags.length === 0) return;
         if (activeTagsOnly && entry.ended_at) return;
         [...new Set(entry.tags)].forEach(tag => {
+            // Uma tag que é uma cor (#red, #F54927...) é uma diretiva pro
+            // calendário, não uma tag de agrupamento — não vira botão de filtro.
+            if (colorFromTag(tag)) return;
             tags.add(tag);
             counts.set(tag, (counts.get(tag) || 0) + 1);
         });
@@ -1060,7 +1119,10 @@ function extractTagsFromText(text) {
     const set = new Set();
     const re = /#(\w+)/g;
     let m;
-    while ((m = re.exec(text || ''))) set.add(m[1]);
+    while ((m = re.exec(text || ''))) {
+        if (colorFromTag(m[1])) continue; // diretiva de cor do calendário, não uma tag
+        set.add(m[1]);
+    }
     return [...set];
 }
 
@@ -1292,6 +1354,12 @@ const CALENDAR_HEX_RE = /^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/;
 // dd/mm/yyyy (dia primeiro) e yyyy-mm-dd (ISO), soltos em qualquer lugar do texto.
 const CALENDAR_DATE_SLASH_RE = /\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g;
 const CALENDAR_DATE_ISO_RE = /\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g;
+// Intervalo: duas datas (qualquer um dos dois formatos) separadas por "~",
+// ex.: "05/10/2026 ~ 10/10/2026".
+const CALENDAR_DATE_TOKEN = '(\\d{1,2}\\/\\d{1,2}\\/\\d{4}|\\d{4}-\\d{1,2}-\\d{1,2})';
+const CALENDAR_RANGE_RE = new RegExp(CALENDAR_DATE_TOKEN + '\\s*~\\s*' + CALENDAR_DATE_TOKEN, 'g');
+// Intervalo máximo aceito, pra não gerar um range gigante por um "~" perdido.
+const CALENDAR_MAX_RANGE_DAYS = 366 * 2;
 
 // Confere se o browser reconhece `name` como cor CSS válida (nome ou hex).
 function isValidCssColor(name) {
@@ -1321,12 +1389,56 @@ function isRealCalendarDate(year, month, day) {
     return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
 }
 
+// Interpreta um único token de data ("dd/mm/yyyy" ou "yyyy-mm-dd") já
+// isolado do texto (ex: dentro de um intervalo "a ~ b"). Devolve
+// {year, month(1-12), day} ou null se inválido.
+function parseDateToken(token) {
+    let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(token);
+    if (m) {
+        const day = Number(m[1]), month = Number(m[2]), year = Number(m[3]);
+        return isRealCalendarDate(year, month, day) ? { year, month, day } : null;
+    }
+    m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(token);
+    if (m) {
+        const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
+        return isRealCalendarDate(year, month, day) ? { year, month, day } : null;
+    }
+    return null;
+}
+
+// calendarDayKey() de cada dia entre a e b, inclusive nas duas pontas
+// (aceita a data final vindo antes da inicial e simplesmente inverte).
+function keysInRange(a, b) {
+    let start = new Date(a.year, a.month - 1, a.day);
+    let end = new Date(b.year, b.month - 1, b.day);
+    if (start > end) { const t = start; start = end; end = t; }
+
+    const keys = [];
+    const cur = new Date(start);
+    let guard = 0;
+    while (cur <= end && guard < CALENDAR_MAX_RANGE_DAYS) {
+        keys.push(calendarDayKey(cur.getFullYear(), cur.getMonth(), cur.getDate()));
+        cur.setDate(cur.getDate() + 1);
+        guard++;
+    }
+    return keys;
+}
+
 // Extrai as datas citadas em `text`, já validadas, como calendarDayKey().
+// Cobre tanto datas soltas quanto intervalos "data ~ data" (todo dia do
+// intervalo entra, com a mesma cor/mensagem da linha).
 function datesInText(text) {
     const keys = [];
     if (!text) return keys;
 
     let m;
+    CALENDAR_RANGE_RE.lastIndex = 0;
+    while ((m = CALENDAR_RANGE_RE.exec(text))) {
+        const a = parseDateToken(m[1]);
+        const b = parseDateToken(m[2]);
+        if (a && b) keys.push(...keysInRange(a, b));
+    }
+
     CALENDAR_DATE_SLASH_RE.lastIndex = 0;
     while ((m = CALENDAR_DATE_SLASH_RE.exec(text))) {
         const day = Number(m[1]), month = Number(m[2]), year = Number(m[3]);
@@ -1337,7 +1449,9 @@ function datesInText(text) {
         const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
         if (isRealCalendarDate(year, month, day)) keys.push(calendarDayKey(year, month - 1, day));
     }
-    return keys;
+    // Datas soltas também batem nas pontas de um intervalo já processado
+    // acima — dedupe pra não duplicar a mesma linha no tooltip do dia.
+    return [...new Set(keys)];
 }
 
 // Varre allEntries e monta dayKey -> { color, texts }. Se mais de uma entry
@@ -1411,11 +1525,51 @@ function setupCalendar() {
     });
 }
 
+// ============================================
+// MODAL DE AJUDA (EN/ES)
+// ============================================
+
+function setupHelpModal() {
+    const overlay = document.getElementById('helpOverlay');
+    const toggleBtn = document.getElementById('helpToggleBtn');
+    const closeBtn = document.getElementById('helpCloseBtn');
+    const enBtn = document.getElementById('helpLangEnBtn');
+    const esBtn = document.getElementById('helpLangEsBtn');
+    const bodyEn = document.getElementById('helpBodyEn');
+    const bodyEs = document.getElementById('helpBodyEs');
+    if (!overlay || !toggleBtn || !closeBtn || !enBtn || !esBtn || !bodyEn || !bodyEs) return;
+
+    const showLang = (lang) => {
+        bodyEn.hidden = lang !== 'en';
+        bodyEs.hidden = lang !== 'es';
+        enBtn.classList.toggle('active', lang === 'en');
+        esBtn.classList.toggle('active', lang === 'es');
+    };
+
+    toggleBtn.onclick = (event) => {
+        event.stopPropagation();
+        overlay.hidden = false;
+    };
+    closeBtn.onclick = () => { overlay.hidden = true; };
+    enBtn.onclick = () => showLang('en');
+    esBtn.onclick = () => showLang('es');
+
+    overlay.addEventListener('click', (event) => {
+        if (event.target === overlay) overlay.hidden = true;
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !overlay.hidden) overlay.hidden = true;
+    });
+}
+
 function toggleCalendar() {
     calendarOpen = !calendarOpen;
     const panel = document.getElementById('calendarPanel');
     if (panel) panel.hidden = !calendarOpen;
-    if (calendarOpen) renderCalendar();
+    if (calendarOpen) {
+        alignCalendarButton();
+        renderCalendar();
+    }
 }
 
 // Substitui o ano exibido por um <input type=number>; Enter confirma, Esc ou
